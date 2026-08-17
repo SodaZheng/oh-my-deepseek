@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import net from "node:net";
@@ -73,6 +73,73 @@ test(
     assert.equal(await canConnect(servicePort), false, "owned service port is still listening");
   },
 );
+
+test("WSL supervisor owns the Linux service while a Windows browser bridge owns Chrome", { skip: process.platform === "win32", timeout: 20_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "oh-my-deepseek-wsl-supervisor-"));
+  const binDirectory = path.join(root, "bin");
+  const profilePath = path.join(root, "profile");
+  const servicePath = path.join(root, "fake-service.mjs");
+  const supervisorPath = path.join(root, "supervisor.mjs");
+  const bridgePath = path.join(root, "browser-host.ps1");
+  const bridgeConfigPath = path.join(root, "browser-config.json");
+  const stoppedMarker = path.join(root, "service-stopped");
+  const servicePort = await reservePort();
+  await mkdir(binDirectory, { recursive: true });
+
+  await writeFile(
+    servicePath,
+    `import { writeFileSync } from "node:fs";\nimport net from "node:net";\nconst server = net.createServer();\nserver.listen(${servicePort}, "127.0.0.1");\nprocess.on("SIGTERM", () => server.close(() => { writeFileSync(${JSON.stringify(stoppedMarker)}, "stopped"); process.exit(0); }));\n`,
+  );
+  const fakePowerShell = path.join(binDirectory, "powershell.exe");
+  await writeFile(
+    fakePowerShell,
+    "#!/bin/sh\nmode=\"\"\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = \"-Mode\" ]; then shift; mode=\"$1\"; fi; shift; done\nif [ \"$mode\" = \"Run\" ]; then sleep 1.2; fi\nexit 0\n",
+    { mode: 0o755 },
+  );
+  await chmod(fakePowerShell, 0o755);
+  await writeFile(bridgePath, "placeholder");
+  await writeFile(bridgeConfigPath, "{}");
+  await writeFile(supervisorPath, renderSupervisor());
+  await writeFile(
+    path.join(root, "config.json"),
+    JSON.stringify({
+      platform: "wsl",
+      launchMode: "windows-host-browser",
+      name: "WSL Lifecycle Test",
+      url: `http://127.0.0.1:${servicePort}/`,
+      serviceCommand: `${shellQuote(process.execPath)} ${shellQuote(servicePath)}`,
+      serviceShell: "/bin/bash",
+      workingDirectory: root,
+      readyHost: "127.0.0.1",
+      readyPort: servicePort,
+      timeoutSeconds: 10,
+      chromePath: "C:\\Chrome\\chrome.exe",
+      nodePath: process.execPath,
+      chromeProfilePath: profilePath,
+      hostBrowserScriptPath: bridgePath,
+      hostBrowserConfigPath: bridgeConfigPath,
+      hostBrowserErrorPath: path.join(root, "browser-error.txt"),
+      lockPath: path.join(root, "supervisor.lock"),
+      logPath: path.join(root, "supervisor.log"),
+    }),
+  );
+
+  const supervisor = spawn(process.execPath, [supervisorPath], {
+    stdio: "ignore",
+    env: { ...process.env, PATH: `${binDirectory}${path.delimiter}${process.env.PATH}` },
+  });
+  const [exitCode] = await Promise.race([
+    once(supervisor, "exit"),
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error("WSL supervisor did not exit")), 15_000);
+      timer.unref();
+    }),
+  ]);
+
+  assert.equal(exitCode, 0, await readFile(path.join(root, "supervisor.log"), "utf8"));
+  assert.equal(await pathExists(stoppedMarker), true, "owned WSL service did not receive SIGTERM");
+  assert.equal(await canConnect(servicePort), false, "owned WSL service port is still listening");
+});
 
 async function reservePort() {
   const server = net.createServer();

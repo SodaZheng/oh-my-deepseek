@@ -3,13 +3,16 @@ import path from "node:path";
 import { DEFAULTS } from "./constants.mjs";
 import { assertSafeAppName, slugify, stableId } from "./utils.mjs";
 
-export function normalizeCreateOptions(values, { platform = process.platform, cwd = process.cwd() } = {}) {
-  if (platform !== "darwin" && platform !== "win32") {
-    throw new Error(`暂不支持 ${platform}；当前只支持 macOS 和 Windows`);
+export function normalizeCreateOptions(values, { platform = process.platform, cwd = process.cwd(), env = process.env } = {}) {
+  const normalizedPlatform = platform === "linux" && (env.WSL_DISTRO_NAME || env.WSL_INTEROP)
+    ? "wsl"
+    : platform;
+  if (normalizedPlatform !== "darwin" && normalizedPlatform !== "win32" && normalizedPlatform !== "wsl") {
+    throw new Error(`暂不支持 ${platform}；当前只支持 macOS、Windows 和 Windows 上的 WSL`);
   }
 
   const name = (values.name ?? DEFAULTS.name).trim();
-  assertSafeAppName(name, platform);
+  assertSafeAppName(name, normalizedPlatform === "wsl" ? "win32" : normalizedPlatform);
 
   const url = normalizeUrl(values.url ?? DEFAULTS.url);
   const serviceCommand = (values.command ?? DEFAULTS.serviceCommand).trim();
@@ -21,16 +24,18 @@ export function normalizeCreateOptions(values, { platform = process.platform, cw
   const workingDirectory = path.resolve(values.cwd ?? cwd);
   const icon = values.icon ? path.resolve(values.icon) : null;
   if (icon) {
-    const expectedExtension = platform === "darwin" ? ".icns" : ".ico";
+    const expectedExtension = normalizedPlatform === "darwin" ? ".icns" : ".ico";
     if (path.extname(icon).toLowerCase() !== expectedExtension) {
-      throw new Error(`${platform === "darwin" ? "macOS" : "Windows"} 自定义图标必须是 ${expectedExtension} 文件`);
+      throw new Error(`${normalizedPlatform === "darwin" ? "macOS" : "Windows"} 自定义图标必须是 ${expectedExtension} 文件`);
     }
   }
   const slug = slugify(name);
-  const instanceId = stableId(`${name}\0${url.href}\0${workingDirectory}`, 16);
+  const instanceIdentity = `${name}\0${url.href}\0${workingDirectory}`
+    + (normalizedPlatform === "wsl" ? `\0${env.WSL_DISTRO_NAME ?? "unknown-wsl"}` : "");
+  const instanceId = stableId(instanceIdentity, 16);
 
   return {
-    platform,
+    platform: normalizedPlatform,
     name,
     url: url.href,
     readyHost: normalizeReadyHost(url.hostname),
@@ -38,7 +43,9 @@ export function normalizeCreateOptions(values, { platform = process.platform, cw
     serviceCommand,
     timeoutSeconds,
     workingDirectory,
-    chrome: values.chrome ? path.resolve(values.chrome) : null,
+    chrome: values.chrome
+      ? normalizeChromePath(values.chrome, normalizedPlatform)
+      : null,
     chromeAppId: values["chrome-app-id"] ?? null,
     icon,
     output: values.output ? path.resolve(values.output) : null,
@@ -50,7 +57,17 @@ export function normalizeCreateOptions(values, { platform = process.platform, cw
     instanceId,
     homeDirectory: os.homedir(),
     nodePath: process.execPath,
+    wslDistro: normalizedPlatform === "wsl" ? env.WSL_DISTRO_NAME ?? null : null,
+    wslUser: normalizedPlatform === "wsl" ? env.USER ?? null : null,
+    serviceShell: normalizedPlatform === "wsl" ? env.SHELL || "/bin/bash" : null,
   };
+}
+
+function normalizeChromePath(value, platform) {
+  if (platform === "wsl" && (/^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\"))) {
+    return value;
+  }
+  return path.resolve(value);
 }
 
 function normalizeUrl(rawUrl) {

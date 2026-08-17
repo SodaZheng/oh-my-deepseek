@@ -38,6 +38,10 @@ async function main() {
     await runChromeAppShim();
     return;
   }
+  if (config.launchMode === "windows-host-browser") {
+    await runWindowsHostBrowser();
+    return;
+  }
   let serviceReadyPromise;
   if (!(await serviceIsReady())) {
     serviceChild = startService();
@@ -103,6 +107,15 @@ function processIsAlive(pid) {
 }
 
 async function activateExistingApp() {
+  if (config.launchMode === "windows-host-browser") {
+    spawnSync("powershell.exe", [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", config.hostBrowserScriptPath,
+      "-ConfigPath", config.hostBrowserConfigPath,
+      "-Mode", "Activate",
+    ], { windowsHide: true, stdio: "ignore", timeout: 5000 });
+    return;
+  }
   if (config.platform === "darwin" && config.chromeShimPath) {
     spawnSync("/usr/bin/open", [config.chromeShimPath], { stdio: "ignore" });
     return;
@@ -118,6 +131,73 @@ async function activateExistingApp() {
   try {
     await fetch(\`http://127.0.0.1:\${port}/json/activate/\${target.id}\`, { signal: AbortSignal.timeout(1000) });
   } catch {}
+}
+
+async function runWindowsHostBrowser() {
+  let serviceReadyPromise;
+  if (!(await serviceIsReady())) {
+    serviceChild = startService();
+    ownsService = true;
+    serviceReadyPromise = waitForService();
+  } else {
+    writeLog("检测到已有服务；本次不会在退出时停止它");
+    serviceReadyPromise = Promise.resolve(true);
+  }
+
+  chromeChild = startWindowsBrowserBridge();
+  const browserExitPromise = waitForChildExit(chromeChild).then(
+    (code) => ({ code, error: null }),
+    (error) => ({ code: 1, error }),
+  );
+  if (!(await serviceReadyPromise)) {
+    stopWindowsBrowserBridge();
+    const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内监听 \${config.readyHost}:\${config.readyPort}\`;
+    throw new Error(reason);
+  }
+  if (ownsService) writeLog(\`服务已就绪，PID \${serviceChild.pid}\`);
+
+  const browserResult = await browserExitPromise;
+  if (browserResult.code !== 0) {
+    let detail = "";
+    try { detail = readFileSync(config.hostBrowserErrorPath, "utf8").trim(); } catch {}
+    throw new Error(detail || browserResult.error?.message || \`Windows Chrome 桥接器退出，状态码 \${browserResult.code}\`);
+  }
+  writeLog("检测到 Windows Chrome App 已关闭");
+  await shutdown(0);
+}
+
+function startWindowsBrowserBridge() {
+  appendFileSync(config.logPath, \`[\${new Date().toISOString()}] 启动 Windows Chrome 桥接器\n\`);
+  const descriptor = openSync(config.logPath, "a", 0o600);
+  const child = spawn("powershell.exe", [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", config.hostBrowserScriptPath,
+    "-ConfigPath", config.hostBrowserConfigPath,
+    "-Mode", "Run",
+  ], {
+    detached: true,
+    windowsHide: true,
+    stdio: ["ignore", descriptor, descriptor],
+  });
+  closeSync(descriptor);
+  return child;
+}
+
+function waitForChildExit(child) {
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code ?? 1));
+  });
+}
+
+function stopWindowsBrowserBridge() {
+  if (config.launchMode !== "windows-host-browser") return;
+  spawnSync("powershell.exe", [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", config.hostBrowserScriptPath,
+    "-ConfigPath", config.hostBrowserConfigPath,
+    "-Mode", "Stop",
+  ], { windowsHide: true, stdio: "ignore", timeout: 5000 });
 }
 
 async function runChromeAppShim() {
@@ -174,7 +254,7 @@ function startService() {
         windowsHide: true,
         stdio: ["ignore", descriptor, descriptor],
       })
-    : spawn("/bin/zsh", ["-lic", config.serviceCommand], {
+    : spawn(config.platform === "wsl" ? config.serviceShell : "/bin/zsh", ["-lic", config.serviceCommand], {
         cwd: config.workingDirectory,
         detached: true,
         windowsHide: true,
@@ -336,7 +416,10 @@ async function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
 
-  if (chromeChild && chromeChild.exitCode === null) await stopProcessTree(chromeChild.pid, "Chrome");
+  if (chromeChild && chromeChild.exitCode === null) {
+    stopWindowsBrowserBridge();
+    await stopProcessTree(chromeChild.pid, config.platform === "wsl" ? "Windows Chrome 桥接器" : "Chrome");
+  }
   if (ownsService && serviceChild) await stopProcessTree(serviceChild.pid, "服务");
   releaseLock();
   writeLog(\`监督器退出，状态码 \${exitCode}\`);

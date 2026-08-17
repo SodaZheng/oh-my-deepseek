@@ -7,6 +7,7 @@ import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
 import { createWindowsLauncher } from "../src/platform/windows.mjs";
 import { pathExists } from "../src/utils.mjs";
+import { renderWindowsHostBrowser } from "../src/templates/wsl.mjs";
 
 test("creates Windows support files and a desktop shortcut", { skip: process.platform !== "win32" }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "oh-my-deepseek-test-"));
@@ -35,7 +36,10 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   );
 
   const launcherPath = path.join(result.supportDirectory, "launcher.ps1");
-  const parseCommand = `$Tokens = $null; $Errors = $null; [System.Management.Automation.Language.Parser]::ParseFile('${launcherPath.replaceAll("'", "''")}', [ref]$Tokens, [ref]$Errors) | Out-Null; if ($Errors.Count -gt 0) { $Errors | ForEach-Object { Write-Error $_ }; exit 1 }`;
+  const browserHostPath = path.join(root, "browser-host.ps1");
+  await writeFile(browserHostPath, renderWindowsHostBrowser());
+  const paths = [launcherPath, browserHostPath].map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
+  const parseCommand = `$Files = @(${paths}); foreach ($File in $Files) { $Tokens = $null; $Errors = $null; [System.Management.Automation.Language.Parser]::ParseFile($File, [ref]$Tokens, [ref]$Errors) | Out-Null; if ($Errors.Count -gt 0) { $Errors | ForEach-Object { Write-Error $_ }; exit 1 } }`;
   const parseResult = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-Command", parseCommand], {
     encoding: "utf8",
     windowsHide: true,

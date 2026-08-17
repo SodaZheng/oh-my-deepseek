@@ -68,6 +68,11 @@ function printCreateResult(result, asJson) {
     if (result.desktopShortcut) process.stdout.write(`${prefix}桌面入口：${result.desktopShortcut}\n`);
     if (result.usesChromeShim) process.stdout.write(`Chrome App Shim：${result.chromeShimPath}\n`);
     else process.stdout.write("提示：未检测到该 URL 的已安装 Chrome Web App，将使用直接 Chrome 模式，Dock 显示 Chrome 图标。\n");
+  } else if (result.platform === "wsl") {
+    process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
+    process.stdout.write(`WSL 发行版：${result.wslDistro}\n`);
+    process.stdout.write(`WSL 监督器目录：${result.supportDirectory}\n`);
+    process.stdout.write(`Windows 桥接器目录：${result.hostSupportDirectory}\n`);
   } else {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
     process.stdout.write(`启动文件目录：${result.supportDirectory}\n`);
@@ -126,5 +131,8 @@ function renderHelp(command) {
 示例：
   oh-my-deepseek create
   oh-my-deepseek create --name "My Agent" --url http://127.0.0.1:5173 --command "npm run dev"
+
+在 WSL 中运行时会自动创建 Windows 桌面快捷方式：DSH 和 Node.js 留在 WSL，
+Chrome 使用 Windows 宿主机安装；宿主机无需另装 Node.js。
 `;
 }

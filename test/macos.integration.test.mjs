@@ -27,6 +27,7 @@ test("creates a signed self-contained macOS app and desktop shortcut", { skip: p
 
   const plist = await readFile(path.join(result.appPath, "Contents", "Info.plist"), "utf8");
   assert.match(plist, /OMDGeneratedBy/);
+  assert.doesNotMatch(plist, /LSUIElement/);
   assert.equal(await readlink(result.desktopShortcut), result.appPath);
   assert.match(
     await readFile(path.join(result.appPath, "Contents", "Resources", "config.json"), "utf8"),

@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { findChrome } from "./chrome.mjs";
 import { createMacLauncher } from "./platform/macos.mjs";
 import { createWindowsLauncher } from "./platform/windows.mjs";
+import { createWslLauncher } from "./platform/wsl.mjs";
 import { pathExists } from "./utils.mjs";
 
 export async function createLauncher(config) {
@@ -15,5 +16,6 @@ export async function createLauncher(config) {
 
   const chrome = await findChrome(config);
   if (config.platform === "darwin") return createMacLauncher(config, chrome);
+  if (config.platform === "wsl") return createWslLauncher(config, chrome);
   return createWindowsLauncher(config, chrome);
 }

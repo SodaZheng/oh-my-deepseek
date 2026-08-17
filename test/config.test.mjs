@@ -34,3 +34,19 @@ test("rejects unsupported protocols and unsafe names", () => {
     /\.icns/,
   );
 });
+
+test("detects WSL as a Windows desktop with a Linux service runtime", () => {
+  const config = normalizeCreateOptions(
+    { cwd: "/home/soda/project", chrome: String.raw`C:\Program Files\Google\Chrome\Application\chrome.exe` },
+    {
+      platform: "linux",
+      cwd: "/home/soda/project",
+      env: { WSL_DISTRO_NAME: "Ubuntu-24.04", USER: "soda", SHELL: "/bin/bash" },
+    },
+  );
+  assert.equal(config.platform, "wsl");
+  assert.equal(config.wslDistro, "Ubuntu-24.04");
+  assert.equal(config.wslUser, "soda");
+  assert.equal(config.serviceShell, "/bin/bash");
+  assert.equal(config.chrome, String.raw`C:\Program Files\Google\Chrome\Application\chrome.exe`);
+});

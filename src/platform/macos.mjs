@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
-import { renderMacChromeShimInfo, renderMacInfoPlist, renderMacLauncher } from "../templates/macos.mjs";
+import { renderMacChromeAppInfo, renderMacChromeLauncher, renderMacInfoPlist, renderMacLauncher } from "../templates/macos.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
 import { ensureDirectory, pathExists, removeExactTarget, writeText } from "../utils.mjs";
 
@@ -15,8 +15,10 @@ export async function createMacLauncher(config, chrome) {
   const stateDirectory = path.join(homeDirectory, "Library", "Application Support", "Oh My DeepSeek", "apps", `${config.slug}-${config.instanceId.slice(0, 8)}`);
   const logPath = path.join(homeDirectory, "Library", "Logs", "Oh My DeepSeek", `${config.slug}.log`);
   const chromeAppId = chrome.appBundle ? await findInstalledChromeAppId(config, homeDirectory) : null;
-  const chromeShimPath = chromeAppId ? path.join(stateDirectory, "chrome-shim", `${config.name}.app`) : null;
+  const chromeShimPath = chromeAppId ? appPath : null;
+  const chromeShimExecutablePath = chromeAppId ? path.join(appPath, "Contents", "MacOS", "app_mode_loader") : null;
   const chromeShimBundleId = chromeAppId ? `com.google.Chrome.app.${chromeAppId}` : null;
+  const appReadyPath = chromeAppId ? path.join(stateDirectory, "app-ready") : null;
   const result = {
     platform: "darwin",
     appPath,
@@ -36,9 +38,10 @@ export async function createMacLauncher(config, chrome) {
   await assertSupervisorNotRunning(path.join(stateDirectory, "supervisor.lock"));
   if (chrome.icon && !(await pathExists(chrome.icon))) throw new Error(`图标文件不存在：${chrome.icon}`);
 
+  let chromeAppMetadata = null;
   if (chromeAppId) {
     await updateInstalledChromeWebAppIcons({ homeDirectory, appId: chromeAppId, iconPath: chrome.icon });
-    await createChromeAppShim({ config, chrome, appId: chromeAppId, shimPath: chromeShimPath, homeDirectory });
+    chromeAppMetadata = readChromeAppMetadata({ chrome, appId: chromeAppId, homeDirectory });
   }
 
   await ensureDirectory(installDirectory);
@@ -47,8 +50,14 @@ export async function createMacLauncher(config, chrome) {
   const contents = path.join(stagedApp, "Contents");
   const resourcesDirectory = path.join(contents, "Resources");
   try {
-    await writeText(path.join(contents, "Info.plist"), renderMacInfoPlist(config, Boolean(chrome.icon)));
-    await writeText(path.join(contents, "MacOS", "launcher"), renderMacLauncher(config), 0o755);
+    const infoPlist = chromeAppMetadata
+      ? renderMacChromeAppInfo({ config, appId: chromeAppId, ...chromeAppMetadata })
+      : renderMacInfoPlist(config, Boolean(chrome.icon));
+    const launcher = chromeAppMetadata
+      ? renderMacChromeLauncher(config, appReadyPath)
+      : renderMacLauncher(config);
+    await writeText(path.join(contents, "Info.plist"), infoPlist);
+    await writeText(path.join(contents, "MacOS", "launcher"), launcher, 0o755);
     await writeText(path.join(resourcesDirectory, "supervisor.mjs"), renderSupervisor());
     await writeText(
       path.join(resourcesDirectory, "config.json"),
@@ -56,8 +65,9 @@ export async function createMacLauncher(config, chrome) {
         generatedBy: GENERATED_BY,
         configVersion: CONFIG_VERSION,
         platform: "darwin",
-        launchMode: chromeAppId ? "chrome-app-shim" : "direct-chrome",
+        launchMode: chromeAppId ? "chrome-app-wrapper" : "direct-chrome",
         name: config.name,
+        appPath,
         url: config.url,
         serviceCommand: config.serviceCommand,
         workingDirectory: config.workingDirectory,
@@ -69,12 +79,17 @@ export async function createMacLauncher(config, chrome) {
         chromeProfilePath: path.join(stateDirectory, "chrome-profile-direct"),
         chromeExtraArgs: [],
         chromeShimPath,
-        chromeShimExecutablePath: chromeShimPath ? path.join(chromeShimPath, "Contents", "MacOS", "app_mode_loader") : null,
+        chromeShimExecutablePath,
         chromeShimBundleId,
+        appReadyPath,
         lockPath: path.join(stateDirectory, "supervisor.lock"),
         logPath,
       }, null, 2)}\n`,
     );
+    if (chromeAppMetadata) {
+      await copyFile(chromeAppMetadata.loaderPath, path.join(contents, "MacOS", "app_mode_loader"));
+      await chmod(path.join(contents, "MacOS", "app_mode_loader"), 0o755);
+    }
     if (chrome.icon) await copyFile(chrome.icon, path.join(resourcesDirectory, "app.icns"));
     signMacApp(stagedApp);
     if (await pathExists(appPath)) await removeExactTarget(appPath);
@@ -127,32 +142,13 @@ async function findInstalledChromeAppId(config, homeDirectory) {
   return null;
 }
 
-async function createChromeAppShim({ config, chrome, appId, shimPath, homeDirectory }) {
-  if (await chromeShimIsCanonical(shimPath, appId, config.url)) {
-    return;
-  }
+function readChromeAppMetadata({ chrome, appId, homeDirectory }) {
   const chromeInfoPath = path.join(chrome.appBundle, "Contents", "Info.plist");
   const chromeVersion = readPlistValue(chromeInfoPath, "CFBundleShortVersionString");
   const chromeBundleVersion = readPlistValue(chromeInfoPath, "CFBundleVersion");
   const loaderPath = path.join(chrome.appBundle, "Contents", "Frameworks", "Google Chrome Framework.framework", "Versions", "Current", "Helpers", "app_mode_loader");
   const appDataPath = path.join(homeDirectory, "Library", "Application Support", "Google", "Chrome", "-", "Web Applications", `_crx_${appId}`);
-  const shimRoot = path.dirname(shimPath);
-  await ensureDirectory(shimRoot);
-  const stagingRoot = await mkdtemp(path.join(shimRoot, ".shim-"));
-  const stagedShim = path.join(stagingRoot, path.basename(shimPath));
-  try {
-    await writeText(path.join(stagedShim, "Contents", "Info.plist"), renderMacChromeShimInfo({ config, appId, chromeVersion, chromeBundleVersion, appDataPath }));
-    await ensureDirectory(path.join(stagedShim, "Contents", "MacOS"));
-    await ensureDirectory(path.join(stagedShim, "Contents", "Resources"));
-    await copyFile(loaderPath, path.join(stagedShim, "Contents", "MacOS", "app_mode_loader"));
-    await copyFile(chrome.icon, path.join(stagedShim, "Contents", "Resources", "app.icns"));
-    await chmod(path.join(stagedShim, "Contents", "MacOS", "app_mode_loader"), 0o755);
-    signMacApp(stagedShim);
-    if (await pathExists(shimPath)) await removeExactTarget(shimPath);
-    await rename(stagedShim, shimPath);
-  } finally {
-    if (await pathExists(stagingRoot)) await removeExactTarget(stagingRoot);
-  }
+  return { chromeVersion, chromeBundleVersion, loaderPath, appDataPath };
 }
 
 async function updateInstalledChromeWebAppIcons({ homeDirectory, appId, iconPath }) {
@@ -183,18 +179,6 @@ async function copyFileIfChanged(source, target) {
   }
   await copyFile(source, target);
   return true;
-}
-
-async function chromeShimIsCanonical(shimPath, appId, url) {
-  const plistPath = path.join(shimPath, "Contents", "Info.plist");
-  if (!(await pathExists(plistPath))) return false;
-  try {
-    return readPlistValue(plistPath, "CrAppModeShortcutID") === appId
-      && readPlistValue(plistPath, "CrAppModeShortcutURL") === url
-      && readPlistValue(plistPath, "CFBundleExecutable") === "app_mode_loader";
-  } catch {
-    return false;
-  }
 }
 
 async function assertReplaceableMacApp(appPath, force) {

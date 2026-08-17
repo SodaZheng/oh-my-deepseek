@@ -10,6 +10,7 @@
 
 - macOS 13+
 - Windows 10/11
+- WSL（推荐 WSL 2；DSH/Node.js 在 WSL，Chrome 在 Windows 宿主机）
 - Node.js 20+
 - Google Chrome
 
@@ -34,11 +35,27 @@ oh-my-deepseek create
 - 服务工作目录：执行 `create` 时所在的目录
 - 启动超时：45 秒
 
-macOS 会把自包含 App 安装到 `~/Applications/DeepSeek Harness.app`，并在桌面创建快捷入口。Windows 会把启动文件放在 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，并在桌面创建 `.lnk`。
+macOS 会把自包含 App 安装到 `~/Applications/DeepSeek Harness.app`，并在桌面创建快捷入口。生成的 App 默认可固定到 Dock；可直接从 `~/Applications` 拖入 Dock。Windows 会把启动文件放在 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，并在桌面创建 `.lnk`。
+
+在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式：桌面仍生成 Windows `.lnk`，点击后静默进入创建时使用的发行版和用户，使用 WSL 内的 Node.js 启动 `dsh web`，再由 Windows 宿主机的 Chrome 打开 App 窗口。宿主机无需重复安装 Node.js 或 DSH。
 
 macOS 会优先检测当前 Chrome 配置中已安装的 Web App，并使用 Chrome 官方 `app_mode_loader` 生成轻量 App Shim。它直接复用系统 Google Chrome，因此启动快、Dock 使用自定义图标、Cookie 和登录状态保持普通 Chrome 行为，也不会触发自定义 Runtime 的 Safe Storage 授权。
 
 如果 URL 尚未安装为 Chrome Web App，工具会回退到直接 Chrome 模式并明确提示；此时功能仍可用，但 Dock 显示 Chrome 图标。可先在 Chrome 中把页面安装为应用，再重新运行 `create`，或通过 `--chrome-app-id` 指定已知 App ID。
+
+### WSL + Windows Chrome
+
+```bash
+# 在安装了 dsh 的 WSL 发行版中执行
+npm install
+npm link
+oh-my-deepseek doctor
+oh-my-deepseek create
+```
+
+WSL 模式保留与原生桌面入口一致的行为：静默启动、自定义图标、无地址栏 Chrome App、全局单实例、重复点击激活现有窗口、关闭窗口后只停止本入口启动的 DSH 进程树。项目和 `node_modules` 可以继续放在 WSL Linux 文件系统中。
+
+Windows 默认可通过 `localhost` 访问 WSL 内的 Web 服务。如果机器关闭了 WSL localhost 转发、被防火墙/VPN 拦截，或 DSH 没有监听配置中的地址和端口，启动器会弹出明确错误并保留日志；不会改写网络或防火墙设置。
 
 ## 创建其他本地 Web App
 
@@ -96,6 +113,7 @@ oh-my-deepseek create `
 
 - macOS：`~/Library/Logs/Oh My DeepSeek/<应用名>.log`
 - Windows：`%LOCALAPPDATA%\Oh My DeepSeek\logs\<应用名>.log`
+- WSL：`~/.local/state/oh-my-deepseek/logs/<应用名>.log`
 
 ## 开发与验证
 
@@ -105,4 +123,4 @@ npm test
 npm pack --dry-run
 ```
 
-CI 在 `macos-latest` 和 `windows-latest` 上运行语法与模板测试；macOS 会实际生成并临时签名测试 App，Windows 会实际生成测试 `.lnk`。
+CI 在 `macos-latest` 和 `windows-latest` 上运行语法与模板测试；macOS 会实际生成并临时签名测试 App，Windows 会实际生成测试 `.lnk`。WSL 安装布局和双端生命周期另有不依赖真实 WSL 的集成测试。

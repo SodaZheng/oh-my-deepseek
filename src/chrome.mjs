@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { isExecutable, pathExists } from "./utils.mjs";
 
 const bundledMacIcon = fileURLToPath(new URL("../icon.icns", import.meta.url));
@@ -8,6 +9,7 @@ const bundledWindowsIcon = fileURLToPath(new URL("../icon.ico", import.meta.url)
 
 export async function findChrome(config, env = process.env) {
   if (config.platform === "darwin") return findChromeOnMac(config);
+  if (config.platform === "wsl") return findChromeOnWsl(config);
   return findChromeOnWindows(config, env);
 }
 
@@ -81,6 +83,63 @@ async function findChromeOnWindows(config, env) {
     }
   }
   throw new Error("未找到 Google Chrome。请先安装 Chrome，或用 --chrome 指定 chrome.exe");
+}
+
+async function findChromeOnWsl(config) {
+  const defaultIcon = config.icon ?? (await existingBundledIcon(bundledWindowsIcon));
+  if (config.chrome) {
+    const windowsPath = isWindowsPath(config.chrome) ? config.chrome : toWindowsPath(config.chrome);
+    if (!windowsPath || !windowsFileExists(windowsPath)) {
+      throw new Error(`Windows Chrome 可执行文件不存在：${config.chrome}`);
+    }
+    return { executable: windowsPath, appBundle: null, icon: defaultIcon };
+  }
+
+  const script = String.raw`
+$Candidates = @(
+  (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+  $(if ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) { Join-Path ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) 'Google\Chrome\Application\chrome.exe' }),
+  $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe' })
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+if ($Candidates.Count -eq 0) { exit 1 }
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::Write($Candidates[0])
+`;
+  const result = runWindowsPowerShell(script);
+  if (result.error || result.status !== 0 || !result.stdout.trim()) {
+    const detail = (result.stderr || result.stdout || result.error?.message || "").trim();
+    throw new Error(`未在 Windows 宿主机找到 Google Chrome。请先安装 Chrome，或用 --chrome 指定 chrome.exe${detail ? `：${detail}` : ""}`);
+  }
+  return { executable: result.stdout.trim(), appBundle: null, icon: defaultIcon };
+}
+
+function isWindowsPath(value) {
+  return /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\");
+}
+
+function toWindowsPath(value) {
+  const result = spawnSync("wslpath", ["-w", value], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return null;
+  return result.stdout.trim() || null;
+}
+
+function windowsFileExists(value) {
+  const script = `if (Test-Path -LiteralPath ${powershellQuote(value)} -PathType Leaf) { exit 0 } else { exit 1 }`;
+  const result = runWindowsPowerShell(script);
+  return !result.error && result.status === 0;
+}
+
+function powershellQuote(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function runWindowsPowerShell(script) {
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  return spawnSync(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+    { encoding: "utf8", windowsHide: true },
+  );
 }
 
 async function existingBundledIcon(iconPath) {
