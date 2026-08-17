@@ -1,0 +1,33 @@
+{
+  "name": "oh-my-deepseek",
+  "version": "0.4.0",
+  "description": "Create a supervised desktop Chrome app with a managed local service lifecycle.",
+  "type": "module",
+  "bin": {
+    "oh-my-deepseek": "bin/oh-my-deepseek.mjs",
+    "omd": "bin/oh-my-deepseek.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "icon.icns",
+    "icon.ico",
+    "README.md"
+  ],
+  "scripts": {
+    "build:icons": "node scripts/build-icons.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node --test",
+    "prepack": "npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "chrome-app",
+    "launcher",
+    "dsh",
+    "macos",
+    "windows"
+  ]
+}

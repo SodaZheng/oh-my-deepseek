@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { normalizeCreateOptions } from "../src/config.mjs";
+
+test("normalizes the default DeepSeek Harness configuration", () => {
+  const config = normalizeCreateOptions({}, { platform: "darwin", cwd: "/tmp/project" });
+  assert.equal(config.name, "DeepSeek Harness");
+  assert.equal(config.url, "http://127.0.0.1:3080/");
+  assert.equal(config.readyHost, "127.0.0.1");
+  assert.equal(config.readyPort, 3080);
+  assert.equal(config.serviceCommand, "dsh web");
+  assert.equal(config.workingDirectory, "/tmp/project");
+  assert.equal(config.timeoutSeconds, 45);
+});
+
+test("derives default HTTP and HTTPS ports", () => {
+  const http = normalizeCreateOptions({ url: "http://localhost/path" }, { platform: "darwin", cwd: "/tmp" });
+  const https = normalizeCreateOptions({ url: "https://localhost/path" }, { platform: "win32", cwd: "C:\\work" });
+  assert.equal(http.readyPort, 80);
+  assert.equal(https.readyPort, 443);
+});
+
+test("rejects unsupported protocols and unsafe names", () => {
+  assert.throws(
+    () => normalizeCreateOptions({ url: "file:///tmp/index.html" }, { platform: "darwin", cwd: "/tmp" }),
+    /仅支持/,
+  );
+  assert.throws(
+    () => normalizeCreateOptions({ name: "bad/name" }, { platform: "darwin", cwd: "/tmp" }),
+    /不能包含/,
+  );
+  assert.throws(
+    () => normalizeCreateOptions({ icon: "/tmp/icon.png" }, { platform: "darwin", cwd: "/tmp" }),
+    /\.icns/,
+  );
+});
