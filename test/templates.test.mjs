@@ -68,6 +68,8 @@ test("Windows templates run a hidden lifecycle supervisor", () => {
   assert.match(hiddenLauncher, /\\u7a0b\\u5e8f/);
   assert.match(supervisor, /powershell\.exe/);
   assert.match(supervisor, /taskkill\.exe/);
+  assert.match(supervisor, /if \(config\.platform === "win32"\)/);
+  assert.match(supervisor, /chromeChild = startChrome\(true\);\s+await waitForChromeDevTools\(\);/);
   assert.match(shortcut, /wscript\.exe/);
   assert.doesNotMatch(shortcut, /TargetPath = \(Get-Command powershell\.exe\)/);
   assert.match(shortcut, /CreateShortcut/);
@@ -131,8 +133,8 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /PostMessage\(hwnd, 0x0010/);
   assert.match(browserHost, /taskkill\.exe/);
   assert.match(browserHost, /\('--app=' \+ \[string\]\$Config\.url\)/);
-  assert.match(browserHost, /--window-position=100,100/);
-  assert.match(browserHost, /--window-size=1280,800/);
+  assert.doesNotMatch(browserHost, /--window-position=/);
+  assert.doesNotMatch(browserHost, /--window-size=/);
   assert.match(browserHost, /function Run-BrowserLifecycle \{[\s\S]*Wait-ForHostService \$ServiceDeadline[\s\S]*Start-HostChrome/);
   assert.doesNotMatch(browserHost, /Preparing%20Chrome%20Runtime|--window-position=-10000,-10000|function Open-AppWindow/);
   assert.match(supervisor, /windows-host-browser/);

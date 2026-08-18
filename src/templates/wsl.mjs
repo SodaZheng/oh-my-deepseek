@@ -334,8 +334,6 @@ function Start-HostChrome {
   Remove-Item -LiteralPath $DevToolsPortFile -Force -ErrorAction SilentlyContinue
   $Arguments = @(
     ('--app=' + [string]$Config.url),
-    '--window-position=100,100',
-    '--window-size=1280,800',
     ('--user-data-dir="' + [string]$Config.chromeProfilePath + '"'),
     '--remote-debugging-port=0',
     '--no-first-run',

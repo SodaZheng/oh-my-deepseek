@@ -52,6 +52,23 @@ async function main() {
     serviceReadyPromise = Promise.resolve(true);
   }
 
+  if (config.platform === "win32") {
+    const serviceReady = await serviceReadyPromise;
+    if (!serviceReady) {
+      const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
+      throw new Error(reason);
+    }
+    if (ownsService) logOwnedServiceReady();
+    chromeChild = startChrome(true);
+    await waitForChromeDevTools();
+    const targetId = await waitForChromeTarget();
+    writeLog(\`Chrome App 已打开，target \${targetId}\`);
+    await waitForChromeTargetToClose(targetId);
+    writeLog("检测到 Chrome App 已关闭");
+    await shutdown(0);
+    return;
+  }
+
   chromeChild = startChrome(false);
   const [serviceReady] = await Promise.all([serviceReadyPromise, waitForChromeDevTools()]);
   if (!serviceReady) {
