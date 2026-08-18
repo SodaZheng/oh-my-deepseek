@@ -61,8 +61,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
         appUserModelId: `Chrome._crx_${installedAppId}`,
       };
     },
-    copyShortcut({ sourcePath, shortcutPath }) {
-      writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ sourcePath, launcherPath: proxyPath, appUserModelId: `Chrome._crx_${installedAppId}` }));
+    copyShortcut({ sourcePath, shortcutPath, iconPath }) {
+      writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ sourcePath, launcherPath: proxyPath, appUserModelId: `Chrome._crx_${installedAppId}`, iconPath }));
     },
     createStartupMonitor({ monitorPath, shortcutPath }) {
       writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ monitorPath }));
@@ -108,6 +108,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   const shortcutOptions = JSON.parse(await readFile(shortcut, "utf8"));
   assert.match(shortcutOptions.launcherPath, /chrome_proxy\.exe$/i);
   assert.equal(shortcutOptions.appUserModelId, appUserModelId);
+  assert.equal(shortcutOptions.iconPath, path.win32.join(result.hostSupportDirectory, "app.ico"));
   const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
   assert.equal(storedConfig.platform, "wsl");
   assert.equal(storedConfig.launchMode, "windows-host-browser");
@@ -127,6 +128,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(browserConfig.launchMode, "installed-pwa");
   assert.equal(browserConfig.appUserModelId, appUserModelId);
   assert.equal(browserConfig.preservePwaIdentity, true);
+  assert.equal(browserConfig.taskbarIconResource, `${path.win32.join(result.hostSupportDirectory, "app.ico")},0`);
   assert.equal(result.serviceLaunchMode, "direct");
   assert.equal(result.taskbarIdentityMatched, true);
   assert.equal(result.usesOfficialPwaEntry, true);

@@ -88,7 +88,9 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   }
   const stagingDirectory = await mkdtemp(path.join(supportRoot, ".oh-my-deepseek-"));
   const hostStagingDirectory = await mkdtemp(path.join(hostSupportRootWsl, ".oh-my-deepseek-"));
-  let installedIconPath = chrome.executable;
+  const installedIconPath = chrome.icon
+    ? path.win32.join(hostSupportDirectory, "app.ico")
+    : chrome.executable;
   try {
     const hostBrowserScriptPath = path.win32.join(hostSupportDirectory, "browser-host.ps1");
     const hostBrowserConfigPath = path.win32.join(hostSupportDirectory, "browser-config.json");
@@ -133,6 +135,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       pwaArguments: installedWebApp?.arguments ?? [],
       appUserModelId,
       preservePwaIdentity: usesOfficialPwaEntry,
+      taskbarIconResource: `${installedIconPath},0`,
       windowHandlePath: path.win32.join(hostSupportDirectory, "app-window.txt"),
       browserPidPath: path.win32.join(hostSupportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,
@@ -167,7 +170,6 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     await writeText(path.join(hostStagingDirectory, "browser-config.json"), `${JSON.stringify(browserConfig, null, 2)}\n`);
     if (chrome.icon) {
       await copyFile(chrome.icon, path.join(hostStagingDirectory, "app.ico"));
-      installedIconPath = path.win32.join(hostSupportDirectory, "app.ico");
     }
     interop.compileNativeLauncher({
       sourcePath: interop.toWindowsPath(nativeLauncherSourceWsl),
@@ -207,7 +209,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   }
 
   if (usesOfficialPwaEntry) {
-    interop.copyShortcut({ sourcePath: officialPwaIdentity.shortcutPath, shortcutPath });
+    interop.copyShortcut({ sourcePath: officialPwaIdentity.shortcutPath, shortcutPath, iconPath: installedIconPath });
     interop.createStartupMonitor({
       monitorPath: path.win32.join(hostSupportDirectory, "pwa-monitor.exe"),
       shortcutPath: monitorStartupShortcutPath,
@@ -295,10 +297,18 @@ $Value = @{
   findPwaShortcutIdentity(options) {
     return findPwaShortcutIdentity(options);
   },
-  copyShortcut({ sourcePath, shortcutPath }) {
-    if (path.win32.resolve(sourcePath).toLowerCase() === path.win32.resolve(shortcutPath).toLowerCase()) return;
-    const result = runPowerShell(`Copy-Item -LiteralPath ${powershellSingleQuote(sourcePath)} -Destination ${powershellSingleQuote(shortcutPath)} -Force`);
-    if (result.error || result.status !== 0) throw new Error(`无法复制 Chrome PWA 快捷方式：${formatCommandError(result)}`);
+  copyShortcut({ sourcePath, shortcutPath, iconPath }) {
+    const shouldCopy = path.win32.resolve(sourcePath).toLowerCase() !== path.win32.resolve(shortcutPath).toLowerCase();
+    const copyCommand = shouldCopy
+      ? `Copy-Item -LiteralPath ${powershellSingleQuote(sourcePath)} -Destination ${powershellSingleQuote(shortcutPath)} -Force\n`
+      : "";
+    const script = `$ErrorActionPreference = 'Stop'
+${copyCommand}$Shell = New-Object -ComObject WScript.Shell
+$Shortcut = $Shell.CreateShortcut(${powershellSingleQuote(shortcutPath)})
+$Shortcut.IconLocation = ${powershellSingleQuote(`${iconPath},0`)}
+$Shortcut.Save()`;
+    const result = runPowerShell(script);
+    if (result.error || result.status !== 0) throw new Error(`无法更新 Chrome PWA 快捷方式：${formatCommandError(result)}`);
   },
   createStartupMonitor({ monitorPath, shortcutPath, scriptPath, supportDirectory, iconPath }) {
     this.createShortcut({

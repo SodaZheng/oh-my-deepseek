@@ -119,7 +119,9 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /Start-PwaWindow/);
   assert.match(browserHost, /GetWindows\(string executablePath\)/);
   assert.match(browserHost, /SHGetPropertyStoreForWindow/);
-  assert.match(browserHost, /SetAppUserModelId/);
+  assert.match(browserHost, /SetTaskbarProperties/);
+  assert.match(browserHost, /iconKey = new PropertyKey\(formatId, 3\)/);
+  assert.match(browserHost, /taskbarIconResource/);
   assert.match(browserHost, /GetAppUserModelId/);
   assert.match(browserHost, /function Set-TaskbarIdentity/);
   assert.match(browserHost, /Set-TaskbarIdentity \$WindowHandle/);

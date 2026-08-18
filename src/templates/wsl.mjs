@@ -107,19 +107,26 @@ public static class OmdChromeWindow {
     var hwnd = new IntPtr(handle);
     return IsWindow(hwnd) && PostMessage(hwnd, 0x0010, IntPtr.Zero, IntPtr.Zero);
   }
-  public static bool SetAppUserModelId(long handle, string appUserModelId) {
+  public static bool SetTaskbarProperties(long handle, string appUserModelId, string iconResource) {
     var hwnd = new IntPtr(handle);
-    if (!IsWindow(hwnd) || string.IsNullOrWhiteSpace(appUserModelId)) return false;
+    if (!IsWindow(hwnd) || string.IsNullOrWhiteSpace(appUserModelId) || string.IsNullOrWhiteSpace(iconResource)) return false;
     var interfaceId = typeof(IPropertyStore).GUID;
     IPropertyStore store;
     if (SHGetPropertyStoreForWindow(hwnd, ref interfaceId, out store) < 0 || store == null) return false;
-    var key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
-    var value = PropVariant.FromString(appUserModelId);
+    var formatId = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+    var iconKey = new PropertyKey(formatId, 3);
+    var appIdKey = new PropertyKey(formatId, 5);
+    var iconValue = PropVariant.FromString(iconResource);
+    var appIdValue = PropVariant.FromString(appUserModelId);
     try {
-      if (store.SetValue(ref key, ref value) < 0) return false;
+      // RelaunchIconResource must be applied before AppUserModelID so the
+      // taskbar refresh triggered by the identity observes the custom icon.
+      if (store.SetValue(ref iconKey, ref iconValue) < 0) return false;
+      if (store.SetValue(ref appIdKey, ref appIdValue) < 0) return false;
       return store.Commit() >= 0;
     } finally {
-      PropVariantClear(ref value);
+      PropVariantClear(ref appIdValue);
+      PropVariantClear(ref iconValue);
       Marshal.FinalReleaseComObject(store);
     }
   }
@@ -212,9 +219,18 @@ function Wait-ForNewChromeWindow([hashtable]$Baseline, [datetime]$Deadline, [str
 }
 
 function Set-TaskbarIdentity([long]$Handle) {
-  if ($Config.preservePwaIdentity) { return }
   $ExpectedAppUserModelId = [string]$Config.appUserModelId
-  $IdentityWasSet = [OmdChromeWindow]::SetAppUserModelId($Handle, $ExpectedAppUserModelId)
+  if ($Config.preservePwaIdentity) {
+    $ExistingAppUserModelId = [OmdChromeWindow]::GetAppUserModelId($Handle)
+    if (-not [string]::Equals($ExistingAppUserModelId, $ExpectedAppUserModelId, [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'Windows Chrome PWA 窗口的 AppUserModelID 与官方快捷方式不一致'
+    }
+  }
+  $IdentityWasSet = [OmdChromeWindow]::SetTaskbarProperties(
+    $Handle,
+    $ExpectedAppUserModelId,
+    [string]$Config.taskbarIconResource
+  )
   $ActualAppUserModelId = [OmdChromeWindow]::GetAppUserModelId($Handle)
   if (-not $IdentityWasSet -or -not [string]::Equals($ActualAppUserModelId, $ExpectedAppUserModelId, [StringComparison]::OrdinalIgnoreCase)) {
     throw '无法把 Windows Chrome App 窗口关联到启动快捷方式'
