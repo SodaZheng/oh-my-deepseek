@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -42,7 +42,7 @@ test("installs one canonical Chrome App with an idle launch monitor", { skip: pr
   const chromeBundle = path.join(root, "Google Chrome.app");
   const chromeExecutable = path.join(chromeBundle, "Contents", "MacOS", "Google Chrome");
   const loader = path.join(chromeBundle, "Contents", "Frameworks", "Google Chrome Framework.framework", "Versions", "Current", "Helpers", "app_mode_loader");
-  const fakeIcon = path.join(root, "app.icns");
+  const fakeIcon = path.resolve("icon.icns");
   await mkdir(path.dirname(chromeExecutable), { recursive: true });
   await mkdir(path.dirname(loader), { recursive: true });
   await writeFile(chromeExecutable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -52,9 +52,10 @@ test("installs one canonical Chrome App with an idle launch monitor", { skip: pr
 <key>CFBundleShortVersionString</key><string>140.0.0.0</string>
 <key>CFBundleVersion</key><string>1400000000</string>
 </dict></plist>\n`);
-  await writeFile(fakeIcon, "fake icon for codesign test");
-
   const appId = "a".repeat(32);
+  const chromeProfile = path.join(root, "Library", "Application Support", "Google", "Chrome", "Default");
+  await mkdir(path.join(chromeProfile, "Web Applications", "Manifest Resources", appId), { recursive: true });
+  await writeFile(path.join(chromeProfile, "Preferences"), JSON.stringify({ web_app_install_metrics: { [appId]: { install_source: 15 } } }));
   const config = normalizeCreateOptions(
     { name: "Monitor Test", output: path.join(root, "Applications"), cwd: root, "chrome-app-id": appId },
     { platform: "darwin", cwd: root },
@@ -82,4 +83,35 @@ test("installs one canonical Chrome App with an idle launch monitor", { skip: pr
     { manageLaunchAgent: false },
   );
   assert.equal(recreated.appPath, result.appPath);
+
+  await writeFile(path.join(result.appPath, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>launcher</string>
+<key>CFBundleIdentifier</key><string>dev.ohmydeepseek.broken</string>
+<key>OMDGeneratedBy</key><string>oh-my-deepseek</string>
+</dict></plist>\n`);
+  const recoveredConfig = normalizeCreateOptions(
+    { name: "Monitor Test", output: path.join(root, "Applications"), cwd: root },
+    { platform: "darwin", cwd: root },
+  );
+  recoveredConfig.homeDirectory = root;
+  const recovered = await createMacLauncher(
+    recoveredConfig,
+    { executable: chromeExecutable, appBundle: chromeBundle, icon: fakeIcon },
+    { manageLaunchAgent: false },
+  );
+  assert.equal(recovered.chromeAppId, appId);
+  assert.equal(recovered.usesChromeShim, true);
+  assert.match(await readFile(path.join(recovered.appPath, "Contents", "Info.plist"), "utf8"), new RegExp(appId));
+
+  await rm(path.join(chromeProfile, "Web Applications", "Manifest Resources", appId), { recursive: true, force: true });
+  await assert.rejects(
+    createMacLauncher(
+      recoveredConfig,
+      { executable: chromeExecutable, appBundle: chromeBundle, icon: fakeIcon },
+      { manageLaunchAgent: false },
+    ),
+    /已停止覆盖/,
+  );
+  assert.match(await readFile(path.join(recovered.appPath, "Contents", "Info.plist"), "utf8"), new RegExp(appId));
 });

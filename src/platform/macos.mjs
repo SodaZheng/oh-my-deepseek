@@ -16,7 +16,11 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
   const desktopPath = path.join(homeDirectory, "Desktop", `${config.name}.app`);
   const stateDirectory = path.join(homeDirectory, "Library", "Application Support", "Oh My DeepSeek", "apps", `${config.slug}-${config.instanceId.slice(0, 8)}`);
   const logPath = path.join(homeDirectory, "Library", "Logs", "Oh My DeepSeek", `${config.slug}.log`);
-  const chromeAppId = chrome.appBundle ? await findInstalledChromeAppId(config, homeDirectory) : null;
+  const ownershipPath = path.join(stateDirectory, "ownership.json");
+  const stateConfigPath = path.join(stateDirectory, "config.json");
+  const chromeAppId = chrome.appBundle
+    ? await findInstalledChromeAppId(config, homeDirectory, { appPath, ownershipPath, stateConfigPath })
+    : null;
   const chromeShimPath = chromeAppId ? appPath : null;
   const legacyChromeShimPath = chromeAppId ? path.join(stateDirectory, "chrome-shim", `${config.name}.app`) : null;
   const chromeShimBundleId = chromeAppId ? `com.google.Chrome.app.${chromeAppId}` : null;
@@ -25,7 +29,6 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
   const nativeMonitorSourcePath = path.join(stateDirectory, "monitor.m");
   const nativeMonitorPath = path.join(stateDirectory, "monitor");
   const monitorConfigPath = path.join(stateDirectory, "monitor-config.json");
-  const ownershipPath = path.join(stateDirectory, "ownership.json");
   const launchAgentLabel = `dev.ohmydeepseek.monitor.${config.instanceId}`;
   const launchAgentPath = path.join(homeDirectory, "Library", "LaunchAgents", `${launchAgentLabel}.plist`);
   const result = {
@@ -169,7 +172,7 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
   return result;
 }
 
-async function findInstalledChromeAppId(config, homeDirectory) {
+async function findInstalledChromeAppId(config, homeDirectory, { appPath, ownershipPath, stateConfigPath }) {
   if (config.chromeAppId) {
     if (!/^[a-p]{32}$/.test(config.chromeAppId)) throw new Error("--chrome-app-id 必须是 32 位 a-p 字符串");
     return config.chromeAppId;
@@ -177,6 +180,15 @@ async function findInstalledChromeAppId(config, homeDirectory) {
   const profileDirectory = path.join(homeDirectory, "Library", "Application Support", "Google", "Chrome", "Default");
   const preferencesPath = path.join(profileDirectory, "Preferences");
   const manifestRoot = path.join(profileDirectory, "Web Applications", "Manifest Resources");
+  const recoveredAppId = await recoverInstalledChromeAppId({
+    config,
+    appPath,
+    ownershipPath,
+    stateConfigPath,
+    preferencesPath,
+    manifestRoot,
+  });
+  if (recoveredAppId) return recoveredAppId;
   let candidates = [];
   try {
     const preferences = JSON.parse(await readFile(preferencesPath, "utf8"));
@@ -207,6 +219,61 @@ async function findInstalledChromeAppId(config, homeDirectory) {
     }
   }
   return null;
+}
+
+async function recoverInstalledChromeAppId({ config, appPath, ownershipPath, stateConfigPath, preferencesPath, manifestRoot }) {
+  const existingPlistPath = path.join(appPath, "Contents", "Info.plist");
+  if (await pathExists(existingPlistPath)) {
+    try {
+      const appId = readPlistValue(existingPlistPath, "CrAppModeShortcutID");
+      const url = readPlistValue(existingPlistPath, "CrAppModeShortcutURL");
+      if (url === config.url) {
+        if (await chromeAppIdIsStillInstalled(appId, preferencesPath, manifestRoot)) return appId;
+        refuseChromeShimDowngrade(`之前关联的 Chrome Web App ${appId} 当前无法验证；为避免破坏 Dock App，已停止覆盖。请在 Chrome 中重新安装该页面后再运行 create`);
+      }
+    } catch (error) {
+      if (error?.code === "OMD_CHROME_APP_UNVERIFIED") throw error;
+    }
+  }
+
+  try {
+    const [ownership, previousConfig] = await Promise.all([
+      readFile(ownershipPath, "utf8").then(JSON.parse),
+      readFile(stateConfigPath, "utf8").then(JSON.parse),
+    ]);
+    const appId = ownership.chromeAppId;
+    const matchesSavedShim = ownership.generatedBy === GENERATED_BY
+      && ownership.appPath === appPath
+      && previousConfig.generatedBy === GENERATED_BY
+      && previousConfig.platform === "darwin"
+      && previousConfig.launchMode === "chrome-app-shim"
+      && previousConfig.url === config.url
+      && previousConfig.chromeShimPath === appPath
+      && previousConfig.chromeShimBundleId === `com.google.Chrome.app.${appId}`;
+    if (matchesSavedShim) {
+      if (await chromeAppIdIsStillInstalled(appId, preferencesPath, manifestRoot)) return appId;
+      refuseChromeShimDowngrade(`已保存的 Chrome Web App ${appId} 当前无法验证；为避免再次降级成 Chrome 图标，已停止覆盖。请在 Chrome 中重新安装该页面后再运行 create`);
+    }
+  } catch (error) {
+    if (error?.code === "OMD_CHROME_APP_UNVERIFIED") throw error;
+  }
+  return null;
+}
+
+function refuseChromeShimDowngrade(message) {
+  const error = new Error(message);
+  error.code = "OMD_CHROME_APP_UNVERIFIED";
+  throw error;
+}
+
+async function chromeAppIdIsStillInstalled(appId, preferencesPath, manifestRoot) {
+  if (!/^[a-p]{32}$/.test(appId) || !(await pathExists(path.join(manifestRoot, appId)))) return false;
+  try {
+    const preferences = JSON.parse(await readFile(preferencesPath, "utf8"));
+    return Object.hasOwn(preferences.web_app_install_metrics ?? {}, appId);
+  } catch {
+    return false;
+  }
 }
 
 async function createChromeAppShim({ config, chrome, appId, shimPath, homeDirectory }) {

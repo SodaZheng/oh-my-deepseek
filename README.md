@@ -42,6 +42,8 @@ macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.ap
 
 macOS 会优先检测当前 Chrome 配置中已安装的 Web App，并使用 Chrome 官方 `app_mode_loader` 生成唯一的可见 App。一个由 `launchd` 管理的无界面原生监视器通过 `NSWorkspace.runningApplications` 事件在登录期间等待点击，不做进程轮询：冷启动时先关闭尚未就绪的首次窗口，启动服务，等待页面就绪，再重新打开同一个 App。监视器本身不启动或常驻业务服务；关闭 App 后仍只停止本次接管启动的服务进程树。
 
+如果新版 Chrome 不再提供旧的 URL→App ID 索引，macOS 生成器会校验并复用既有 `ownership.json`、Shim 配置和 Chrome Manifest Resources 中保存的 App ID。已存在的官方 Shim 不会因为一次启发式检测失败就被降级覆盖成普通 launcher；关联资源无法验证时会停止创建并提示重新安装 PWA。
+
 创建时如果本机可用 Apple Command Line Tools，工具会现场编译并临时签名 universal 原生监视器；如果不可用，则自动回退到兼容的 Node.js 监视器，不影响 App 创建。
 
 因为启动和运行始终是 `~/Applications` 中的同一个 Chrome App Shim，Dock 只显示一个图标。它继续复用系统 Google Chrome，Cookie 和登录状态保持普通 Chrome 行为，也不会触发自定义 Runtime 的 Safe Storage 授权。首次冷启动可能有一次很短的图标弹跳。
