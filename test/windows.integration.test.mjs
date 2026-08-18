@@ -7,7 +7,7 @@ import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
 import { createWindowsLauncher } from "../src/platform/windows.mjs";
 import { pathExists } from "../src/utils.mjs";
-import { renderWindowsHiddenLauncher } from "../src/templates/windows.mjs";
+import { renderWindowsHiddenLauncher, renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource } from "../src/templates/windows.mjs";
 import { renderWindowsHostBrowser } from "../src/templates/wsl.mjs";
 
 test("creates Windows support files and a desktop shortcut", { skip: process.platform !== "win32" }, async () => {
@@ -99,7 +99,11 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
     windowsHide: true,
   });
   assert.equal(propertyResult.status, 0, propertyResult.stderr || propertyResult.stdout);
-  assert.equal(propertyResult.stdout.trim(), appUserModelId);
+  assert.equal(
+    propertyResult.stdout.trim(),
+    appUserModelId,
+    "the shortcut property store was updated in memory but not persisted to the .lnk file",
+  );
 
   const argumentProbePath = path.join(root, "argument probe.mjs");
   const argumentOutputPath = path.join(root, "argument probe.json");
@@ -147,4 +151,46 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.equal(await pathExists(detachedMarkerPath), true, "child process stopped when WScript exited");
+
+  const nativeProbePath = path.join(root, "native probe.mjs");
+  const nativeOutputPath = path.join(root, "native probe.json");
+  const nativeSourcePath = path.join(root, "native-launcher.cs");
+  const nativeLauncherPath = path.join(root, "native-launcher.exe");
+  await writeFile(nativeProbePath, `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(nativeOutputPath)}, JSON.stringify(process.argv.slice(2)));\n`);
+  const nativeArguments = [nativeProbePath, "--distribution", "Ubuntu Test", "--exec", "/usr/bin/node"];
+  await writeFile(nativeSourcePath, renderWindowsNativeLauncherSource({
+    programPath: process.execPath,
+    programArguments: nativeArguments,
+    appUserModelId: "OpenAI.OhMyDeepSeek.NativeProbe",
+    missingTitle: "Missing Node",
+    missingMessage: "Node missing",
+  }));
+  const nativeCompile = spawnSync(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-Command", `Add-Type -Path '${nativeSourcePath.replaceAll("'", "''")}' -OutputAssembly '${nativeLauncherPath.replaceAll("'", "''")}' -OutputType WindowsApplication`],
+    { encoding: "utf8", windowsHide: true },
+  );
+  assert.equal(nativeCompile.status, 0, nativeCompile.stderr || nativeCompile.stdout);
+  const nativeResult = spawnSync(nativeLauncherPath, [], { encoding: "utf8", windowsHide: true });
+  assert.equal(nativeResult.status, 0, nativeResult.stderr || nativeResult.stdout);
+  const nativeDeadline = Date.now() + 5000;
+  while (!(await pathExists(nativeOutputPath)) && Date.now() < nativeDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.deepEqual(JSON.parse(await readFile(nativeOutputPath, "utf8")), nativeArguments.slice(1));
+
+  const monitorSourcePath = path.join(root, "pwa-monitor.cs");
+  const monitorExecutablePath = path.join(root, "pwa-monitor.exe");
+  await writeFile(monitorSourcePath, renderWindowsPwaMonitorSource({
+    appUserModelId: "Chrome._crx_test",
+    launcherPath: nativeLauncherPath,
+    windowHandlePath: path.join(root, "app-window.txt"),
+    monitorId: "native-test",
+  }));
+  const monitorCompile = spawnSync(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-Command", `Add-Type -Path '${monitorSourcePath.replaceAll("'", "''")}' -OutputAssembly '${monitorExecutablePath.replaceAll("'", "''")}' -OutputType WindowsApplication`],
+    { encoding: "utf8", windowsHide: true },
+  );
+  assert.equal(monitorCompile.status, 0, monitorCompile.stderr || monitorCompile.stdout);
 });

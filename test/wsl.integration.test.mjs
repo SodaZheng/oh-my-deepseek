@@ -26,7 +26,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
       env: { WSL_DISTRO_NAME: "Ubuntu-Test", USER: "tester", SHELL: "/bin/bash" },
     },
   );
-  const appUserModelId = `OpenAI.OhMyDeepSeek.${config.instanceId}`;
+  const appUserModelId = `Chrome._crx_${installedAppId}`;
   config.homeDirectory = home;
   const toLocalPath = (windowsPath) => {
     assert.match(windowsPath, /^[A-Z]:\\/i);
@@ -38,6 +38,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
         localAppData: String.raw`C:\Users\tester\AppData\Local`,
         desktop: String.raw`C:\Users\tester\Desktop`,
         startup: String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup`,
+        appData: String.raw`C:\Users\tester\AppData\Roaming`,
+        programs: String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs`,
         powerShell: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
         wsl: String.raw`C:\Windows\System32\wsl.exe`,
       };
@@ -49,6 +51,21 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
     createShortcut(options) {
       const target = toLocalPath(options.shortcutPath);
       writeFileSync(target, JSON.stringify(options));
+    },
+    compileNativeLauncher({ outputPathWsl }) {
+      writeFileSync(outputPathWsl, "native launcher placeholder");
+    },
+    findPwaShortcutIdentity() {
+      return {
+        shortcutPath: String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Chrome Apps\WSL Harness.lnk`,
+        appUserModelId: `Chrome._crx_${installedAppId}`,
+      };
+    },
+    copyShortcut({ sourcePath, shortcutPath }) {
+      writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ sourcePath, launcherPath: proxyPath, appUserModelId: `Chrome._crx_${installedAppId}` }));
+    },
+    createStartupMonitor({ monitorPath, shortcutPath }) {
+      writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ monitorPath }));
     },
     resolveDirectService() {
       return {
@@ -80,17 +97,16 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(await pathExists(path.join(result.supportDirectory, "supervisor.mjs")), true);
   assert.equal(await pathExists(path.join(hostSupport, "browser-host.ps1")), true);
   assert.equal(await pathExists(path.join(hostSupport, "launcher.ps1")), false);
-  assert.equal(await pathExists(path.join(hostSupport, "launcher.js")), true);
-  const hiddenLauncher = await readFile(path.join(hostSupport, "launcher.js"), "utf8");
-  assert.notEqual(hiddenLauncher.charCodeAt(0), 0xfeff);
-  assert.equal(/[^\x00-\x7f]/.test(hiddenLauncher), false);
-  assert.match(hiddenLauncher, /C:\\\\Windows\\\\System32\\\\wsl\.exe/);
-  assert.match(hiddenLauncher, /--distribution/);
-  assert.match(hiddenLauncher, /--exec/);
-  assert.match(hiddenLauncher, /shell\.Run\(command, 0, false\)/);
-  assert.doesNotMatch(hiddenLauncher, /powershell\.exe/i);
+  assert.equal(await pathExists(path.join(hostSupport, "launcher.js")), false);
+  assert.equal(await pathExists(path.join(hostSupport, "launcher.exe")), true);
+  assert.equal(await pathExists(path.join(hostSupport, "pwa-monitor.exe")), true);
+  const nativeLauncherSource = await readFile(path.join(hostSupport, "launcher.cs"), "utf8");
+  assert.match(nativeLauncherSource, /SetCurrentProcessExplicitAppUserModelID/);
+  assert.match(nativeLauncherSource, /CreateNoWindow = true/);
+  assert.match(nativeLauncherSource, /Process\.Start/);
+  assert.match(nativeLauncherSource, /process\.WaitForExit\(\)/);
   const shortcutOptions = JSON.parse(await readFile(shortcut, "utf8"));
-  assert.match(shortcutOptions.launcherPath, /launcher\.js$/i);
+  assert.match(shortcutOptions.launcherPath, /chrome_proxy\.exe$/i);
   assert.equal(shortcutOptions.appUserModelId, appUserModelId);
   const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
   assert.equal(storedConfig.platform, "wsl");
@@ -110,8 +126,10 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   const browserConfig = JSON.parse(await readFile(path.join(hostSupport, "browser-config.json"), "utf8"));
   assert.equal(browserConfig.launchMode, "installed-pwa");
   assert.equal(browserConfig.appUserModelId, appUserModelId);
+  assert.equal(browserConfig.preservePwaIdentity, true);
   assert.equal(result.serviceLaunchMode, "direct");
   assert.equal(result.taskbarIdentityMatched, true);
+  assert.equal(result.usesOfficialPwaEntry, true);
   assert.equal(await pathExists(legacyWarmStartShortcut), false);
 });
 

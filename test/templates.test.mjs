@@ -4,7 +4,7 @@ import { normalizeCreateOptions } from "../src/config.mjs";
 import { renderMacInfoPlist, renderMacLaunchAgent, renderMacLauncher, renderMacMonitor } from "../src/templates/macos.mjs";
 import { renderMacNativeMonitorSource } from "../src/templates/macos-native-monitor.mjs";
 import { renderSupervisor } from "../src/templates/supervisor.mjs";
-import { renderWindowsHiddenLauncher, renderWindowsShortcutScript } from "../src/templates/windows.mjs";
+import { renderWindowsHiddenLauncher, renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource, renderWindowsShortcutScript } from "../src/templates/windows.mjs";
 import { renderWindowsHostBrowser } from "../src/templates/wsl.mjs";
 
 const macConfig = normalizeCreateOptions(
@@ -74,20 +74,40 @@ test("Windows templates run a hidden lifecycle supervisor", () => {
   assert.match(shortcut, /AppUserModelId/);
   assert.match(shortcut, /9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3/);
   assert.match(shortcut, /ShortcutAppIdentity/);
+  assert.match(shortcut, /persistFile\.Save\(shortcutPath, true\)/);
+  assert.match(shortcut, /Size = 24/);
+  assert.doesNotMatch(shortcut, /Size = 16/);
 });
 
 test("WSL templates keep service ownership in Linux and browser ownership in Windows", () => {
-  const launcher = renderWindowsHiddenLauncher({
+  const launcher = renderWindowsNativeLauncherSource({
     programPath: "C:\\Windows\\System32\\wsl.exe",
     programArguments: ["--distribution", "Ubuntu", "--exec", "/usr/bin/node", "/app/supervisor.mjs"],
+    appUserModelId: "OpenAI.OhMyDeepSeek.test",
     missingTitle: "Missing WSL",
     missingMessage: "WSL moved",
   });
+  const shortcut = renderWindowsShortcutScript({ nativeLauncher: true });
+  const pwaMonitor = renderWindowsPwaMonitorSource({
+    appUserModelId: "Chrome._crx_test",
+    launcherPath: "C:\\App\\launcher.exe",
+    windowHandlePath: "C:\\App\\app-window.txt",
+    monitorId: "test",
+  });
   const browserHost = renderWindowsHostBrowser();
   const supervisor = renderSupervisor();
-  assert.match(launcher, /wsl\.exe/);
-  assert.match(launcher, /--distribution/);
-  assert.match(launcher, /--exec/);
+  assert.match(launcher, /SetCurrentProcessExplicitAppUserModelID/);
+  assert.match(launcher, /CreateNoWindow = true/);
+  assert.match(launcher, /Process\.Start/);
+  assert.match(launcher, /process\.WaitForExit\(\)/);
+  assert.match(shortcut, /\$Shortcut\.TargetPath = \$LauncherPath/);
+  assert.doesNotMatch(shortcut, /Get-Command wscript\.exe/);
+  assert.match(pwaMonitor, /SetWinEventHook/);
+  assert.match(pwaMonitor, /EventObjectShow/);
+  assert.match(pwaMonitor, /ReadAppUserModelId/);
+  assert.match(pwaMonitor, /Size = 24/);
+  assert.doesNotMatch(pwaMonitor, /Size = 16/);
+  assert.match(pwaMonitor, /launcher\.WaitForExit/);
   assert.match(browserHost, /DevToolsActivePort/);
   assert.match(browserHost, /Get-TargetSnapshot/);
   assert.match(browserHost, /function Test-HttpService/);
@@ -100,8 +120,12 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /GetWindows\(string executablePath\)/);
   assert.match(browserHost, /SHGetPropertyStoreForWindow/);
   assert.match(browserHost, /SetAppUserModelId/);
+  assert.match(browserHost, /GetAppUserModelId/);
   assert.match(browserHost, /function Set-TaskbarIdentity/);
   assert.match(browserHost, /Set-TaskbarIdentity \$WindowHandle/);
+  assert.match(browserHost, /ActualAppUserModelId/);
+  assert.match(browserHost, /Size = 24/);
+  assert.doesNotMatch(browserHost, /Size = 16/);
   assert.match(browserHost, /PostMessage\(hwnd, 0x0010/);
   assert.match(browserHost, /taskkill\.exe/);
   assert.match(browserHost, /\('--app=' \+ \[string\]\$Config\.url\)/);

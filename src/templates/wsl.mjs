@@ -47,7 +47,7 @@ public static class OmdChromeWindow {
     }
   }
 
-  [StructLayout(LayoutKind.Explicit, Size = 16)]
+  [StructLayout(LayoutKind.Explicit, Size = 24)]
   private struct PropVariant {
     [FieldOffset(0)] internal ushort valueType;
     [FieldOffset(8)] internal IntPtr pointerValue;
@@ -123,6 +123,25 @@ public static class OmdChromeWindow {
       Marshal.FinalReleaseComObject(store);
     }
   }
+
+  public static string GetAppUserModelId(long handle) {
+    var hwnd = new IntPtr(handle);
+    if (!IsWindow(hwnd)) return null;
+    var interfaceId = typeof(IPropertyStore).GUID;
+    IPropertyStore store;
+    if (SHGetPropertyStoreForWindow(hwnd, ref interfaceId, out store) < 0 || store == null) return null;
+    var key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+    var value = new PropVariant();
+    try {
+      if (store.GetValue(ref key, out value) < 0 || value.pointerValue == IntPtr.Zero) return null;
+      if (value.valueType == 31) return Marshal.PtrToStringUni(value.pointerValue);
+      if (value.valueType == 8) return Marshal.PtrToStringBSTR(value.pointerValue);
+      return null;
+    } finally {
+      PropVariantClear(ref value);
+      Marshal.FinalReleaseComObject(store);
+    }
+  }
 }
 '@
 
@@ -193,7 +212,11 @@ function Wait-ForNewChromeWindow([hashtable]$Baseline, [datetime]$Deadline, [str
 }
 
 function Set-TaskbarIdentity([long]$Handle) {
-  if (-not [OmdChromeWindow]::SetAppUserModelId($Handle, [string]$Config.appUserModelId)) {
+  if ($Config.preservePwaIdentity) { return }
+  $ExpectedAppUserModelId = [string]$Config.appUserModelId
+  $IdentityWasSet = [OmdChromeWindow]::SetAppUserModelId($Handle, $ExpectedAppUserModelId)
+  $ActualAppUserModelId = [OmdChromeWindow]::GetAppUserModelId($Handle)
+  if (-not $IdentityWasSet -or -not [string]::Equals($ActualAppUserModelId, $ExpectedAppUserModelId, [StringComparison]::OrdinalIgnoreCase)) {
     throw '无法把 Windows Chrome App 窗口关联到启动快捷方式'
   }
 }

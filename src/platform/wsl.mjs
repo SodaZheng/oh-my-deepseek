@@ -4,9 +4,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
-import { renderWindowsHiddenLauncher, renderWindowsShortcutScript } from "../templates/windows.mjs";
+import { renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource, renderWindowsShortcutScript } from "../templates/windows.mjs";
 import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
-import { ensureDirectory, isExecutable, pathExists, removeExactTarget, shellQuote, writeText } from "../utils.mjs";
+import { ensureDirectory, isExecutable, pathExists, powershellSingleQuote, removeExactTarget, shellQuote, writeText } from "../utils.mjs";
 
 export async function createWslLauncher(config, chrome, interop = defaultInterop) {
   if (!config.wslDistro) throw new Error("无法确定当前 WSL 发行版；请在 WSL 终端中重新运行");
@@ -29,12 +29,21 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     ? { ...resolvedDirectService, nodeCompileCachePath: path.join(stateDirectory, "node-compile-cache") }
     : null;
   const installedWebApp = await findInstalledWindowsWebApp({ config, chrome, windowsEnvironment, interop });
-  const appUserModelId = `OpenAI.OhMyDeepSeek.${config.instanceId}`;
+  const officialPwaIdentity = installedWebApp
+    ? interop.findPwaShortcutIdentity({ installedWebApp, windowsEnvironment })
+    : null;
+  if (installedWebApp && !officialPwaIdentity) {
+    throw new Error("检测到 Chrome PWA，但找不到其官方 Windows 快捷方式或 AppUserModelID。请在 Chrome 中重新安装该页面为应用并保留开始菜单快捷方式后再运行 create");
+  }
+  const appUserModelId = officialPwaIdentity?.appUserModelId ?? `OpenAI.OhMyDeepSeek.${config.instanceId}`;
+  const usesOfficialPwaEntry = Boolean(officialPwaIdentity);
   const chromeProfilePath = path.win32.join(windowsEnvironment.localAppData, "Oh My DeepSeek", "profiles", appKey);
   const chromeProfilePathWsl = interop.toWslPath(chromeProfilePath);
   const shortcutDirectory = config.output ? interop.toWindowsPath(config.output) : windowsEnvironment.desktop;
   const shortcutPath = path.win32.join(shortcutDirectory, `${config.name}.lnk`);
   const shortcutPathWsl = interop.toWslPath(shortcutPath);
+  const monitorStartupShortcutPath = path.win32.join(windowsEnvironment.startup, `${config.name} Monitor.lnk`);
+  const monitorStartupShortcutPathWsl = interop.toWslPath(monitorStartupShortcutPath);
   const lockPath = path.join(stateDirectory, "supervisor.lock");
   const legacyPrewarmLockPath = path.join(stateDirectory, "prewarm.lock");
   const legacyPrewarmReadyPath = path.join(stateDirectory, "prewarm-ready.json");
@@ -55,6 +64,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     chromeProfileDirectory: installedWebApp?.profileDirectory ?? null,
     appUserModelId,
     taskbarIdentityMatched: true,
+    usesOfficialPwaEntry,
     compileCachePrepared: false,
     serviceLaunchMode: directService ? "direct" : "login-shell",
     wslDistro: config.wslDistro,
@@ -122,6 +132,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       pwaLauncherPath: installedWebApp?.launcherPath ?? null,
       pwaArguments: installedWebApp?.arguments ?? [],
       appUserModelId,
+      preservePwaIdentity: usesOfficialPwaEntry,
       windowHandlePath: path.win32.join(hostSupportDirectory, "app-window.txt"),
       browserPidPath: path.win32.join(hostSupportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,
@@ -141,28 +152,53 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     const wslArguments = ["--distribution", config.wslDistro];
     if (config.wslUser) wslArguments.push("--user", config.wslUser);
     wslArguments.push("--exec", config.nodePath, path.join(supportDirectory, "supervisor.mjs"));
-    await writeText(
-      path.join(hostStagingDirectory, "launcher.js"),
-      renderWindowsHiddenLauncher({
-        programPath: windowsEnvironment.wsl,
-        programArguments: wslArguments,
-        missingTitle: "找不到 WSL",
-        missingMessage: `找不到 Windows WSL 启动器：${windowsEnvironment.wsl}`,
-      }),
-    );
+    const nativeLauncherSourceWsl = path.join(hostStagingDirectory, "launcher.cs");
+    const nativeLauncherExecutableWsl = path.join(hostStagingDirectory, "launcher.exe");
+    await writeText(nativeLauncherSourceWsl, renderWindowsNativeLauncherSource({
+      programPath: windowsEnvironment.wsl,
+      programArguments: wslArguments,
+      appUserModelId,
+      missingTitle: "找不到 WSL",
+      missingMessage: `找不到 Windows WSL 启动器：${windowsEnvironment.wsl}`,
+    }));
     await writeText(path.join(hostStagingDirectory, "browser-host.ps1"), withUtf8Bom(renderWindowsHostBrowser()));
-    await writeText(path.join(hostStagingDirectory, "create-shortcut.ps1"), withUtf8Bom(renderWindowsShortcutScript()));
+    await writeText(path.join(hostStagingDirectory, "create-shortcut.ps1"), withUtf8Bom(renderWindowsShortcutScript({ nativeLauncher: true })));
     await writeText(path.join(hostStagingDirectory, "wsl-launch.json"), `${JSON.stringify(launchConfig, null, 2)}\n`);
     await writeText(path.join(hostStagingDirectory, "browser-config.json"), `${JSON.stringify(browserConfig, null, 2)}\n`);
     if (chrome.icon) {
       await copyFile(chrome.icon, path.join(hostStagingDirectory, "app.ico"));
       installedIconPath = path.win32.join(hostSupportDirectory, "app.ico");
     }
+    interop.compileNativeLauncher({
+      sourcePath: interop.toWindowsPath(nativeLauncherSourceWsl),
+      outputPath: interop.toWindowsPath(nativeLauncherExecutableWsl),
+      sourcePathWsl: nativeLauncherSourceWsl,
+      outputPathWsl: nativeLauncherExecutableWsl,
+    });
+    if (!(await pathExists(nativeLauncherExecutableWsl))) throw new Error("Windows 原生启动器编译完成但 launcher.exe 不存在");
+    if (usesOfficialPwaEntry) {
+      const monitorSourceWsl = path.join(hostStagingDirectory, "pwa-monitor.cs");
+      const monitorExecutableWsl = path.join(hostStagingDirectory, "pwa-monitor.exe");
+      await writeText(monitorSourceWsl, renderWindowsPwaMonitorSource({
+        appUserModelId,
+        launcherPath: path.win32.join(hostSupportDirectory, "launcher.exe"),
+        windowHandlePath: path.win32.join(hostSupportDirectory, "app-window.txt"),
+        monitorId: config.instanceId,
+      }));
+      interop.compileNativeLauncher({
+        sourcePath: interop.toWindowsPath(monitorSourceWsl),
+        outputPath: interop.toWindowsPath(monitorExecutableWsl),
+        sourcePathWsl: monitorSourceWsl,
+        outputPathWsl: monitorExecutableWsl,
+      });
+      if (!(await pathExists(monitorExecutableWsl))) throw new Error("Windows PWA 监视器编译完成但 pwa-monitor.exe 不存在");
+    }
 
     await stopLegacyWslPrewarm(legacyPrewarmLockPath, legacyPrewarmScriptPath);
     if (await pathExists(legacyPrewarmReadyPath)) await removeExactTarget(legacyPrewarmReadyPath);
     if (await pathExists(supportDirectory)) await removeExactTarget(supportDirectory);
     await rename(stagingDirectory, supportDirectory);
+    interop.stopPwaMonitor?.({ monitorPath: path.win32.join(hostSupportDirectory, "pwa-monitor.exe") });
     if (await pathExists(hostSupportDirectoryWsl)) await removeExactTarget(hostSupportDirectoryWsl);
     await rename(hostStagingDirectory, hostSupportDirectoryWsl);
   } finally {
@@ -170,15 +206,27 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     if (await pathExists(hostStagingDirectory)) await removeExactTarget(hostStagingDirectory);
   }
 
-  interop.createShortcut({
-    shortcutPath,
-    launcherPath: path.win32.join(hostSupportDirectory, "launcher.js"),
-    supportDirectory: hostSupportDirectory,
-    iconPath: installedIconPath,
-    description: `${config.name} — 在 WSL 启动服务，再以 Windows Chrome App 模式打开`,
-    appUserModelId,
-    scriptPath: path.win32.join(hostSupportDirectory, "create-shortcut.ps1"),
-  });
+  if (usesOfficialPwaEntry) {
+    interop.copyShortcut({ sourcePath: officialPwaIdentity.shortcutPath, shortcutPath });
+    interop.createStartupMonitor({
+      monitorPath: path.win32.join(hostSupportDirectory, "pwa-monitor.exe"),
+      shortcutPath: monitorStartupShortcutPath,
+      scriptPath: path.win32.join(hostSupportDirectory, "create-shortcut.ps1"),
+      supportDirectory: hostSupportDirectory,
+      iconPath: installedIconPath,
+    });
+  } else {
+    if (await pathExists(monitorStartupShortcutPathWsl)) await removeExactTarget(monitorStartupShortcutPathWsl);
+    interop.createShortcut({
+      shortcutPath,
+      launcherPath: path.win32.join(hostSupportDirectory, "launcher.exe"),
+      supportDirectory: hostSupportDirectory,
+      iconPath: installedIconPath,
+      description: `${config.name} — 在 WSL 启动服务，再以 Windows Chrome App 模式打开`,
+      appUserModelId,
+      scriptPath: path.win32.join(hostSupportDirectory, "create-shortcut.ps1"),
+    });
+  }
   if (legacyStartupShortcutPathWsl && await pathExists(legacyStartupShortcutPathWsl)) {
     await removeExactTarget(legacyStartupShortcutPathWsl);
   }
@@ -192,6 +240,8 @@ $Value = @{
   localAppData = [Environment]::GetFolderPath('LocalApplicationData')
   desktop = [Environment]::GetFolderPath('Desktop')
   startup = [Environment]::GetFolderPath('Startup')
+  appData = [Environment]::GetFolderPath('ApplicationData')
+  programs = [Environment]::GetFolderPath('Programs')
   powerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
   wsl = (Get-Command wsl.exe -ErrorAction Stop).Source
 }
@@ -235,6 +285,38 @@ $Value = @{
       throw new Error(`无法创建 Windows 桌面快捷方式：${formatCommandError(result)}`);
     }
   },
+  compileNativeLauncher({ sourcePath, outputPath }) {
+    const script = `Add-Type -Path ${powershellSingleQuote(sourcePath)} -OutputAssembly ${powershellSingleQuote(outputPath)} -OutputType WindowsApplication`;
+    const result = runPowerShell(script);
+    if (result.error || result.status !== 0) {
+      throw new Error(`无法编译 Windows 原生启动器：${formatCommandError(result)}`);
+    }
+  },
+  findPwaShortcutIdentity(options) {
+    return findPwaShortcutIdentity(options);
+  },
+  copyShortcut({ sourcePath, shortcutPath }) {
+    if (path.win32.resolve(sourcePath).toLowerCase() === path.win32.resolve(shortcutPath).toLowerCase()) return;
+    const result = runPowerShell(`Copy-Item -LiteralPath ${powershellSingleQuote(sourcePath)} -Destination ${powershellSingleQuote(shortcutPath)} -Force`);
+    if (result.error || result.status !== 0) throw new Error(`无法复制 Chrome PWA 快捷方式：${formatCommandError(result)}`);
+  },
+  createStartupMonitor({ monitorPath, shortcutPath, scriptPath, supportDirectory, iconPath }) {
+    this.createShortcut({
+      shortcutPath,
+      launcherPath: monitorPath,
+      supportDirectory,
+      iconPath,
+      description: "Oh My DeepSeek PWA launch monitor",
+      appUserModelId: "",
+      scriptPath,
+    });
+    const started = runPowerShell(`Start-Process -FilePath ${powershellSingleQuote(monitorPath)} -WindowStyle Hidden`);
+    if (started.error || started.status !== 0) throw new Error(`无法启动 Windows PWA 监视器：${formatCommandError(started)}`);
+  },
+  stopPwaMonitor({ monitorPath }) {
+    const script = `$Expected = ${powershellSingleQuote(monitorPath)}; Get-CimInstance Win32_Process -Filter "Name = 'pwa-monitor.exe'" -ErrorAction SilentlyContinue | Where-Object { [string]::Equals([string]$_.ExecutablePath, $Expected, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+    runPowerShell(script);
+  },
   resolveDirectService(config) {
     return resolveDirectWslService(config);
   },
@@ -263,6 +345,55 @@ function formatCommandError(result) {
 
 function withUtf8Bom(contents) {
   return `\uFEFF${contents}`;
+}
+
+export function findPwaShortcutIdentity({ installedWebApp, windowsEnvironment }) {
+  const pinnedTaskbar = windowsEnvironment.appData
+    ? path.win32.join(windowsEnvironment.appData, "Microsoft", "Internet Explorer", "Quick Launch", "User Pinned", "TaskBar")
+    : null;
+  const roots = [windowsEnvironment.desktop, windowsEnvironment.programs, pinnedTaskbar]
+    .filter(Boolean)
+    .map(powershellSingleQuote)
+    .join(", ");
+  if (!roots) return null;
+  const script = `
+$Roots = @(${roots})
+$ExpectedTarget = ${powershellSingleQuote(installedWebApp.launcherPath)}
+$AppArgument = ${powershellSingleQuote(`--app-id=${installedWebApp.appId}`)}
+$ProfileArgument = ${powershellSingleQuote(`--profile-directory=${installedWebApp.profileDirectory}`)}
+$WshShell = New-Object -ComObject WScript.Shell
+$ShellApplication = New-Object -ComObject Shell.Application
+$Files = @($Roots | ForEach-Object {
+  if (Test-Path -LiteralPath $_ -PathType Container) {
+    Get-ChildItem -LiteralPath $_ -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue
+  }
+} | Sort-Object FullName -Unique)
+foreach ($File in $Files) {
+  try {
+    $Shortcut = $WshShell.CreateShortcut($File.FullName)
+    if (-not [string]::Equals([string]$Shortcut.TargetPath, $ExpectedTarget, [StringComparison]::OrdinalIgnoreCase)) { continue }
+    $Arguments = [string]$Shortcut.Arguments
+    if (-not $Arguments.Contains($AppArgument) -or -not $Arguments.Contains($ProfileArgument)) { continue }
+    $Folder = $ShellApplication.Namespace($File.DirectoryName)
+    $Item = if ($Folder) { $Folder.ParseName($File.Name) } else { $null }
+    $AppUserModelId = if ($Item) { [string]$Item.ExtendedProperty('System.AppUserModel.ID') } else { '' }
+    if ([string]::IsNullOrWhiteSpace($AppUserModelId)) { continue }
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    [Console]::Write((@{ shortcutPath = $File.FullName; appUserModelId = $AppUserModelId } | ConvertTo-Json -Compress))
+    exit 0
+  } catch {}
+}
+exit 3
+`;
+  const result = runPowerShell(script);
+  if (result.error || result.status !== 0 || !result.stdout.trim()) return null;
+  try {
+    const value = JSON.parse(result.stdout.trim());
+    if (!value.shortcutPath || !value.appUserModelId || value.appUserModelId.length >= 128 || /\s/.test(value.appUserModelId)) return null;
+    return value;
+  } catch {
+    return null;
+  }
 }
 
 async function assertReplaceableWslInstall(supportDirectory, shortcutPath, force) {

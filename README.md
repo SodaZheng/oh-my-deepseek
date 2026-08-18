@@ -38,7 +38,9 @@ oh-my-deepseek create
 
 macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.app`，并在桌面创建快捷入口。它就是唯一的可见 App，可直接从 `~/Applications` 拖入 Dock。Windows 会把启动文件放在 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，并在桌面创建 `.lnk`。快捷方式通过无控制台的 Windows Script Host 启动 Node 监督器后立即退出，不再让 WScript 或 PowerShell 在整个 App 生命周期中保持运行；`launcher.js` 使用无 BOM 的纯 ASCII 内容，Unicode 路径和提示以 `\uXXXX` 表示，兼容经典 JScript 引擎。旧快捷方式需要重新运行一次 `oh-my-deepseek create` 才能更新。
 
-在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式：桌面仍生成 Windows `.lnk`，点击后由 Windows Script Host 直接调用 `wsl.exe`，静默进入创建时使用的发行版和用户。生成入口时工具会提前解析 `dsh` 等简单服务命令的绝对可执行路径和参数；点击时监督器直接执行该入口，跳过交互式登录 shell、启动脚本和重复的命令发现。宿主机无需重复安装 Node.js 或 DSH，也不会安装常驻预热进程。
+在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式。检测到 Chrome 已安装 PWA 时，桌面入口会直接复制 Chrome 官方 PWA 快捷方式，因此任务栏入口和最终窗口本来就是同一个 Chrome App。一个创建时编译的无控制台原生监视器通过 Windows 窗口事件捕获首次 PWA 窗口：服务未接管时立即关闭该窗口，启动 `wsl.exe` 监督器，等 DSH 完整就绪后再由同一个官方 PWA 打开。它不轮询、不预热 WSL、不运行 DSH，空闲时只等待窗口事件。
+
+如果找不到 Chrome 官方 PWA 快捷方式，才回退到原生 `launcher.exe` 入口。两条路径都不再经过 Windows Script Host。生成入口时工具会提前解析 `dsh` 等简单服务命令的绝对可执行路径和参数；点击时监督器直接执行该入口，跳过交互式登录 shell、启动脚本和重复的命令发现。宿主机无需重复安装 Node.js 或 DSH，也不会安装常驻预热进程。
 
 macOS 会优先检测当前 Chrome 配置中已安装的 Web App，并使用 Chrome 官方 `app_mode_loader` 生成唯一的可见 App。一个由 `launchd` 管理的无界面原生监视器通过 `NSWorkspace.runningApplications` 事件在登录期间等待点击，不做进程轮询：冷启动时先关闭尚未就绪的首次窗口，启动服务，等待页面就绪，再重新打开同一个 App。监视器本身不启动或常驻业务服务；关闭 App 后仍只停止本次接管启动的服务进程树。
 
@@ -66,7 +68,7 @@ WSL 模式保留与原生桌面入口一致的行为：静默启动、自定义�
 
 WSL 创建入口时会扫描 Windows Chrome 的 `Default` 和 `Profile N`，按页面 URL 识别已经安装的 PWA。检测成功后使用 Chrome 官方 `chrome_proxy.exe --app-id=<ID> --profile-directory=<Profile>` 启动，因此复用 Windows Chrome 的登录状态、PWA 菜单、图标和窗口体验；不会再为主路径创建独立调试 Profile，也不需要 DevTools 端口。桥接器通过本次新增的 Windows 顶层窗口句柄完成激活和关闭检测。
 
-生成器会为每个入口创建唯一的 `System.AppUserModel.ID`，同时写入桌面 `.lnk` 和启动后的 Chrome App 顶层窗口。任务栏不再依赖 Chrome 官方快捷方式或 Windows 的关联猜测，而是按这个明确相同的身份把启动入口与最终窗口归入一个图标；PWA 与 `--app=<URL>` 回退模式都会执行窗口身份对齐。
+官方 PWA 路径保留 Chrome 自己的 `System.AppUserModel.ID`，不再修改窗口身份；监视器用该 ID 精确识别目标窗口并避免影响其他 Chrome 窗口。只有无官方 PWA 快捷方式的回退路径才使用本工具生成的专属 App ID。
 
 第一次使用前，需要在 Windows 的普通 Chrome 窗口中安装一次页面：先在 WSL 手动运行服务，在 Windows Chrome 打开对应 URL，选择“安装此网站为应用”或“将网页安装为应用”，然后重新运行 `oh-my-deepseek create`。如果没有检测到已安装 PWA，工具会明确提示并回退到 `--app=<URL>` 兼容模式。
 
@@ -126,7 +128,7 @@ oh-my-deepseek create `
 7. 启动失败时弹出提示，详细输出保存在日志文件中。
 8. 重复点击时激活现有窗口，不创建第二个实例。
 
-WSL 的简单服务命令链路为：桌面入口 → 隐藏的 `wscript.exe` → 指定发行版的 `wsl.exe --exec` → Node 监督器 → 生成时固化的服务可执行文件与参数。运行时不再启动交互式登录 shell；复杂命令则保留原兼容链路。
+WSL 的 PWA 链路为：Chrome 官方快捷方式 → 原生事件监视器 → 无控制台 `launcher.exe` → 指定发行版的 `wsl.exe --exec` → Node 监督器 → 完整就绪后重开同一个 Chrome PWA。运行时不再启动 WScript 或交互式登录 shell；复杂命令则保留原兼容链路。
 
 如果端口在点击入口前已经可用，关闭 Chrome App **不会**停止原有服务，避免误杀用户手动启动或由其他工具管理的进程。
 

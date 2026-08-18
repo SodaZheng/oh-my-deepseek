@@ -83,6 +83,9 @@ function printCreateResult(result, asJson) {
     if (result.compileCachePrepared) process.stdout.write(`DSH 首次启动缓存：已在 create 阶段准备\n`);
     process.stdout.write(`WSL 监督器目录：${result.supportDirectory}\n`);
     process.stdout.write(`Windows 桥接器目录：${result.hostSupportDirectory}\n`);
+    process.stdout.write(result.usesOfficialPwaEntry
+      ? `Windows 启动入口：Chrome 官方 PWA 快捷方式 + 原生事件监视器\n`
+      : `Windows 启动入口：原生无控制台 launcher.exe（无 WScript）\n`);
     process.stdout.write(`WSL 服务启动：${result.serviceLaunchMode === "direct" ? "直接执行（无常驻）" : "登录 shell 兼容模式"}\n`);
   } else {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
