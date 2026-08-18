@@ -81,6 +81,7 @@ function printCreateResult(result, asJson) {
     }
     process.stdout.write(`WSL 监督器目录：${result.supportDirectory}\n`);
     process.stdout.write(`Windows 桥接器目录：${result.hostSupportDirectory}\n`);
+    process.stdout.write(`WSL 服务启动：${result.serviceLaunchMode === "direct" ? "直接执行（无常驻）" : "登录 shell 兼容模式"}\n`);
   } else {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
     process.stdout.write(`启动文件目录：${result.supportDirectory}\n`);

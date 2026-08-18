@@ -103,6 +103,9 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /function Run-BrowserLifecycle \{[\s\S]*Wait-ForHostService \$ServiceDeadline[\s\S]*Start-HostChrome/);
   assert.doesNotMatch(browserHost, /Preparing%20Chrome%20Runtime|--window-position=-10000,-10000|function Open-AppWindow/);
   assert.match(supervisor, /windows-host-browser/);
+  assert.match(supervisor, /config\.directService\?\.executable/);
+  assert.match(supervisor, /直接执行服务入口/);
+  assert.match(supervisor, /NODE_COMPILE_CACHE/);
   assert.match(supervisor, /serviceShell/);
   assert.match(supervisor, /function powerShellExecutable/);
   assert.match(supervisor, /const alert = spawn\(powerShellExecutable\(\)/);

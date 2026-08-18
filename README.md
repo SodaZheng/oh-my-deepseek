@@ -2,7 +2,7 @@
 
 把本地 Web 服务变成可以直接双击的 Chrome App。
 
-用户点击入口后，工具会在后台静默启动服务，等待页面和插件清单就绪，再用 Google Chrome 打开无地址栏窗口。关闭该 Chrome App 后，工具会自动停止由本次入口启动的服务进程树。
+用户点击入口后，工具会在后台静默启动服务，等待页面和插件清单完整就绪，再用 Google Chrome 打开无地址栏窗口。关闭该 Chrome App 后，工具会自动停止由本次入口启动的服务进程树。
 
 同一个 App 在全局只允许一个监督器、一个服务进程树和一个 Chrome App Shim。重复点击只激活现有窗口，不会再打开新的 Chrome。
 
@@ -34,10 +34,11 @@ oh-my-deepseek create
 - 页面地址：`http://127.0.0.1:3080/`
 - 服务工作目录：执行 `create` 时所在的目录
 - 启动超时：45 秒
+- WSL 服务启动：创建入口时解析命令，点击后直接执行，不常驻后台
 
 macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.app`，并在桌面创建快捷入口。它就是唯一的可见 App，可直接从 `~/Applications` 拖入 Dock。Windows 会把启动文件放在 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，并在桌面创建 `.lnk`。快捷方式通过无控制台的 Windows Script Host 直接启动 Node 监督器，不再经过常驻 PowerShell 启动层；`launcher.js` 使用无 BOM 的纯 ASCII 内容，Unicode 路径和提示以 `\uXXXX` 表示，兼容经典 JScript 引擎。旧快捷方式需要重新运行一次 `oh-my-deepseek create` 才能更新。
 
-在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式：桌面仍生成 Windows `.lnk`，点击后由 Windows Script Host 直接调用 `wsl.exe`，静默进入创建时使用的发行版和用户，使用 WSL 内的 Node.js 启动 `dsh web`，再由 Windows 宿主机的 Chrome 打开 App 窗口。宿主机无需重复安装 Node.js 或 DSH。
+在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式：桌面仍生成 Windows `.lnk`，点击后由 Windows Script Host 直接调用 `wsl.exe`，静默进入创建时使用的发行版和用户。生成入口时工具会提前解析 `dsh` 等简单服务命令的绝对可执行路径和参数；点击时监督器直接执行该入口，跳过交互式登录 shell、启动脚本和重复的命令发现。宿主机无需重复安装 Node.js 或 DSH，也不会安装常驻预热进程。
 
 macOS 会优先检测当前 Chrome 配置中已安装的 Web App，并使用 Chrome 官方 `app_mode_loader` 生成唯一的可见 App。一个由 `launchd` 管理的无界面原生监视器通过 `NSWorkspace.runningApplications` 事件在登录期间等待点击，不做进程轮询：冷启动时先关闭尚未就绪的首次窗口，启动服务，等待页面就绪，再重新打开同一个 App。监视器本身不启动或常驻业务服务；关闭 App 后仍只停止本次接管启动的服务进程树。
 
@@ -57,13 +58,15 @@ oh-my-deepseek doctor
 oh-my-deepseek create
 ```
 
-WSL 模式保留与原生桌面入口一致的行为：静默启动、自定义图标、无地址栏 Chrome App、全局单实例、重复点击激活现有窗口、关闭窗口后只停止本入口启动的 DSH 进程树。项目和 `node_modules` 可以继续放在 WSL Linux 文件系统中。
+WSL 模式保留与原生桌面入口一致的行为：静默启动、自定义图标、无地址栏 Chrome App、全局单实例、重复点击激活现有窗口、关闭窗口后只停止本入口启动的 DSH 进程树。完整就绪门槛没有降低：Chrome 窗口仍只会在 DSH 页面和插件清单完整可用后打开。
+
+`dsh web`、`npm run dev` 以及只包含普通参数和引号的命令会使用直接执行快路径，并在应用状态目录复用 Node 磁盘编译缓存，减少后续冷启动重复解析模块的开销。包含管道、重定向、变量展开、命令替换、通配符或环境变量赋值的复杂命令会自动回退到原有登录 shell 兼容路径，避免改变命令语义。两种模式都只在点击后启动，空闲时不占用 WSL/DSH 的 CPU 或内存；快路径只保留少量磁盘缓存。
 
 WSL 创建入口时会扫描 Windows Chrome 的 `Default` 和 `Profile N`，按页面 URL 识别已经安装的 PWA。检测成功后使用 Chrome 官方 `chrome_proxy.exe --app-id=<ID> --profile-directory=<Profile>` 启动，因此复用 Windows Chrome 的登录状态、PWA 菜单、图标和窗口体验；不会再为主路径创建独立调试 Profile，也不需要 DevTools 端口。桥接器通过本次新增的 Windows 顶层窗口句柄完成激活和关闭检测。
 
 第一次使用前，需要在 Windows 的普通 Chrome 窗口中安装一次页面：先在 WSL 手动运行服务，在 Windows Chrome 打开对应 URL，选择“安装此网站为应用”或“将网页安装为应用”，然后重新运行 `oh-my-deepseek create`。如果没有检测到已安装 PWA，工具会明确提示并回退到 `--app=<URL>` 兼容模式。
 
-Windows 宿主浏览器桥接器只在 App 运行期间存在。PWA 模式使用窗口句柄状态；URL 回退模式复用单个 HTTP 客户端与 Chrome 进程对象。空闲状态不安装常驻 Windows 服务或守护进程。
+Windows 宿主浏览器桥接器只在 App 窗口运行期间存在。PWA 模式使用窗口句柄状态；URL 回退模式复用单个 HTTP 客户端与 Chrome 进程对象。空闲状态不安装常驻 Windows 服务、WSL 守护进程或预热任务。
 
 Windows 默认可通过 `localhost` 访问 WSL 内的 Web 服务。如果机器关闭了 WSL localhost 转发、被防火墙/VPN 拦截，或 DSH 没有监听配置中的地址和端口，启动器会弹出明确错误并保留日志；不会改写网络或防火墙设置。
 
@@ -116,6 +119,8 @@ oh-my-deepseek create `
 6. App 窗口关闭后，仅停止本次启动的服务。
 7. 启动失败时弹出提示，详细输出保存在日志文件中。
 8. 重复点击时激活现有窗口，不创建第二个实例。
+
+WSL 的简单服务命令链路为：桌面入口 → 隐藏的 `wscript.exe` → 指定发行版的 `wsl.exe --exec` → Node 监督器 → 生成时固化的服务可执行文件与参数。运行时不再启动交互式登录 shell；复杂命令则保留原兼容链路。
 
 如果端口在点击入口前已经可用，关闭 Chrome App **不会**停止原有服务，避免误杀用户手动启动或由其他工具管理的进程。
 

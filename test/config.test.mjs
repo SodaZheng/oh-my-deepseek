@@ -48,5 +48,6 @@ test("detects WSL as a Windows desktop with a Linux service runtime", () => {
   assert.equal(config.wslDistro, "Ubuntu-24.04");
   assert.equal(config.wslUser, "soda");
   assert.equal(config.serviceShell, "/bin/bash");
+  assert.equal(config.servicePath, null);
   assert.equal(config.chrome, String.raw`C:\Program Files\Google\Chrome\Application\chrome.exe`);
 });

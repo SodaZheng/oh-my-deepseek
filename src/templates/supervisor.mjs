@@ -1,5 +1,5 @@
 export function renderSupervisor() {
-  return `import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+  return `import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ let ownsService = false;
 let ownsLock = false;
 let shuttingDown = false;
 let serviceSpawnError = null;
+let serviceStartedAt = null;
 
 mkdirSync(path.dirname(config.logPath), { recursive: true });
 mkdirSync(config.chromeProfilePath, { recursive: true });
@@ -57,7 +58,7 @@ async function main() {
     const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
     throw new Error(reason);
   }
-  if (ownsService) writeLog(\`服务已就绪，PID \${serviceChild.pid}\`);
+  if (ownsService) logOwnedServiceReady();
   openChromeAppWindow();
   const targetId = await waitForChromeTarget();
   await closePrewarmTargets(targetId);
@@ -153,7 +154,7 @@ async function runWindowsHostBrowser() {
     const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
     throw new Error(reason);
   }
-  if (ownsService) writeLog(\`服务已就绪，PID \${serviceChild.pid}\`);
+  if (ownsService) logOwnedServiceReady();
 
   const browserResult = await browserExitPromise;
   if (browserResult.code !== 0) {
@@ -207,7 +208,7 @@ async function runChromeAppShim() {
       const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
       throw new Error(reason);
     }
-    writeLog(\`服务已就绪，PID \${serviceChild.pid}\`);
+    logOwnedServiceReady();
   } else {
     writeLog("检测到已有服务；本次不会在退出时停止它");
   }
@@ -244,27 +245,51 @@ function chromeShimIsRunning() {
 }
 
 function startService() {
+  serviceStartedAt = Date.now();
   appendFileSync(config.logPath, \`\\n[\${new Date().toISOString()}] 启动服务：\${config.serviceCommand}\\n\`);
   const descriptor = openSync(config.logPath, "a", 0o600);
-  const child = config.platform === "win32"
-    ? spawn(powerShellExecutable(), ["-NoLogo", "-WindowStyle", "Hidden", "-Command", config.serviceCommand], {
-        cwd: config.workingDirectory,
-        detached: true,
-        windowsHide: true,
-        stdio: ["ignore", descriptor, descriptor],
-      })
-    : spawn(config.platform === "wsl" ? config.serviceShell : "/bin/zsh", ["-lic", config.serviceCommand], {
-        cwd: config.workingDirectory,
-        detached: true,
-        windowsHide: true,
-        stdio: ["ignore", descriptor, descriptor],
-      });
+  let child;
+  if (config.platform === "win32") {
+    child = spawn(powerShellExecutable(), ["-NoLogo", "-WindowStyle", "Hidden", "-Command", config.serviceCommand], {
+      cwd: config.workingDirectory,
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", descriptor, descriptor],
+    });
+  } else if (config.platform === "wsl" && config.directService?.executable && existsSync(config.directService.executable)) {
+    writeLog(\`直接执行服务入口：\${config.directService.executable}\`);
+    child = spawn(config.directService.executable, config.directService.arguments, {
+      cwd: config.workingDirectory,
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", descriptor, descriptor],
+      env: {
+        ...process.env,
+        ...(config.directService.path ? { PATH: config.directService.path } : {}),
+        ...(config.directService.nodeCompileCachePath && !process.env.NODE_COMPILE_CACHE
+          ? { NODE_COMPILE_CACHE: config.directService.nodeCompileCachePath }
+          : {}),
+      },
+    });
+  } else {
+    child = spawn(config.platform === "wsl" ? config.serviceShell : "/bin/zsh", ["-lic", config.serviceCommand], {
+      cwd: config.workingDirectory,
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", descriptor, descriptor],
+    });
+  }
   closeSync(descriptor);
   child.once("error", (error) => {
     serviceSpawnError = error;
     writeLog(\`服务进程错误：\${error.message}\`);
   });
   return child;
+}
+
+function logOwnedServiceReady() {
+  const elapsed = serviceStartedAt === null ? "未知" : \`\${((Date.now() - serviceStartedAt) / 1000).toFixed(1)} 秒\`;
+  writeLog(\`服务完整就绪，PID \${serviceChild.pid}，冷启动用时 \${elapsed}\`);
 }
 
 async function waitForService() {

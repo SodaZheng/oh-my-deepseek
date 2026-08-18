@@ -111,7 +111,12 @@ test("WSL supervisor owns the Linux service while a Windows browser bridge owns 
       name: "WSL Lifecycle Test",
       url: `http://127.0.0.1:${servicePort}/`,
       serviceCommand: `${shellQuote(process.execPath)} ${shellQuote(servicePath)}`,
-      serviceShell: "/bin/bash",
+      serviceShell: "/does/not/exist",
+      directService: {
+        executable: process.execPath,
+        arguments: [servicePath],
+        path: process.env.PATH,
+      },
       workingDirectory: root,
       readyHost: "127.0.0.1",
       readyPort: servicePort,

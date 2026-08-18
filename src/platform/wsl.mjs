@@ -1,4 +1,4 @@
-import { copyFile, mkdtemp, readFile, readdir, rename } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, realpath, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -6,7 +6,7 @@ import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
 import { renderWindowsHiddenLauncher, renderWindowsShortcutScript } from "../templates/windows.mjs";
 import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
-import { ensureDirectory, pathExists, removeExactTarget, writeText } from "../utils.mjs";
+import { ensureDirectory, isExecutable, pathExists, removeExactTarget, shellQuote, writeText } from "../utils.mjs";
 
 export async function createWslLauncher(config, chrome, interop = defaultInterop) {
   if (!config.wslDistro) throw new Error("无法确定当前 WSL 发行版；请在 WSL 终端中重新运行");
@@ -24,6 +24,10 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   const hostSupportRootWsl = interop.toWslPath(hostSupportRoot);
   const hostSupportDirectoryWsl = interop.toWslPath(hostSupportDirectory);
   const powerShellPathWsl = interop.toWslPath(windowsEnvironment.powerShell);
+  const resolvedDirectService = await interop.resolveDirectService(config);
+  const directService = resolvedDirectService
+    ? { ...resolvedDirectService, nodeCompileCachePath: path.join(stateDirectory, "node-compile-cache") }
+    : null;
   const installedWebApp = await findInstalledWindowsWebApp({ config, chrome, windowsEnvironment, interop });
   const chromeProfilePath = path.win32.join(windowsEnvironment.localAppData, "Oh My DeepSeek", "profiles", appKey);
   const chromeProfilePathWsl = interop.toWslPath(chromeProfilePath);
@@ -31,6 +35,12 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   const shortcutPath = path.win32.join(shortcutDirectory, `${config.name}.lnk`);
   const shortcutPathWsl = interop.toWslPath(shortcutPath);
   const lockPath = path.join(stateDirectory, "supervisor.lock");
+  const legacyPrewarmLockPath = path.join(stateDirectory, "prewarm.lock");
+  const legacyPrewarmReadyPath = path.join(stateDirectory, "prewarm-ready.json");
+  const legacyPrewarmScriptPath = path.join(supportDirectory, "wsl-prewarm.mjs");
+  const legacyStartupShortcutPathWsl = windowsEnvironment.startup
+    ? interop.toWslPath(path.win32.join(windowsEnvironment.startup, `${config.name} (WSL Warm Start).lnk`))
+    : null;
 
   const result = {
     platform: "wsl",
@@ -42,6 +52,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     usesInstalledPwa: Boolean(installedWebApp),
     chromeAppId: installedWebApp?.appId ?? null,
     chromeProfileDirectory: installedWebApp?.profileDirectory ?? null,
+    serviceLaunchMode: directService ? "direct" : "login-shell",
     wslDistro: config.wslDistro,
     url: config.url,
     serviceCommand: config.serviceCommand,
@@ -74,6 +85,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       url: config.url,
       serviceCommand: config.serviceCommand,
       serviceShell: config.serviceShell,
+      directService,
       workingDirectory: config.workingDirectory,
       readyHost: config.readyHost,
       readyPort: config.readyPort,
@@ -138,6 +150,8 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       installedIconPath = path.win32.join(hostSupportDirectory, "app.ico");
     }
 
+    await stopLegacyWslPrewarm(legacyPrewarmLockPath, legacyPrewarmScriptPath);
+    if (await pathExists(legacyPrewarmReadyPath)) await removeExactTarget(legacyPrewarmReadyPath);
     if (await pathExists(supportDirectory)) await removeExactTarget(supportDirectory);
     await rename(stagingDirectory, supportDirectory);
     if (await pathExists(hostSupportDirectoryWsl)) await removeExactTarget(hostSupportDirectoryWsl);
@@ -155,6 +169,9 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     description: `${config.name} — 在 WSL 启动服务，再以 Windows Chrome App 模式打开`,
     scriptPath: path.win32.join(hostSupportDirectory, "create-shortcut.ps1"),
   });
+  if (legacyStartupShortcutPathWsl && await pathExists(legacyStartupShortcutPathWsl)) {
+    await removeExactTarget(legacyStartupShortcutPathWsl);
+  }
   return result;
 }
 
@@ -164,6 +181,7 @@ const defaultInterop = {
 $Value = @{
   localAppData = [Environment]::GetFolderPath('LocalApplicationData')
   desktop = [Environment]::GetFolderPath('Desktop')
+  startup = [Environment]::GetFolderPath('Startup')
   powerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
   wsl = (Get-Command wsl.exe -ErrorAction Stop).Source
 }
@@ -205,6 +223,9 @@ $Value = @{
     if (result.error || result.status !== 0) {
       throw new Error(`无法创建 Windows 桌面快捷方式：${formatCommandError(result)}`);
     }
+  },
+  resolveDirectService(config) {
+    return resolveDirectWslService(config);
   },
 };
 
@@ -256,6 +277,119 @@ async function assertSupervisorNotRunning(lockPath) {
   } catch (error) {
     if (error?.message?.includes("当前 App")) throw error;
   }
+}
+
+async function stopLegacyWslPrewarm(lockPath, scriptPath) {
+  if (!(await pathExists(lockPath))) return;
+  let pid;
+  try {
+    pid = Number(JSON.parse(await readFile(lockPath, "utf8")).pid);
+    const commandLine = await readFile(`/proc/${pid}/cmdline`, "utf8");
+    if (!Number.isInteger(pid) || pid <= 0 || !commandLine.split("\0").includes(scriptPath)) throw new Error("stale lock");
+  } catch {
+    await removeExactTarget(lockPath);
+    return;
+  }
+  process.kill(pid, "SIGTERM");
+  const deadline = Date.now() + 7000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("旧的 WSL 预热进程未能停止；请先运行 wsl --shutdown 后重试");
+}
+
+export async function resolveDirectWslService(config) {
+  const words = parseSimpleServiceCommand(config.serviceCommand);
+  if (!words) return null;
+  const [command, ...arguments_] = words;
+  const result = spawnSync(
+    config.serviceShell,
+    ["-lic", `command -v ${shellQuote(command)}`],
+    { encoding: "utf8" },
+  );
+  if (result.error || result.status !== 0) return null;
+  const discoveredExecutable = result.stdout.trim();
+  if (!path.isAbsolute(discoveredExecutable) || discoveredExecutable.includes("\n")) return null;
+  let executable;
+  try {
+    executable = await realpath(discoveredExecutable);
+  } catch {
+    return null;
+  }
+  if (!(await isExecutable(executable))) return null;
+  return {
+    executable,
+    arguments: arguments_,
+    path: config.servicePath,
+  };
+}
+
+export function parseSimpleServiceCommand(command) {
+  const words = [];
+  let current = "";
+  let state = "unquoted";
+  let started = false;
+  const finishWord = () => {
+    if (!started) return;
+    words.push(current);
+    current = "";
+    started = false;
+  };
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index];
+    if (state === "single") {
+      if (character === "'") state = "unquoted";
+      else current += character;
+      continue;
+    }
+    if (state === "double") {
+      if (character === '"') {
+        state = "unquoted";
+      } else if (character === "\\") {
+        index += 1;
+        if (index >= command.length) return null;
+        if (command[index] === '"' || command[index] === "\\") current += command[index];
+        else current += `\\${command[index]}`;
+      } else if (character === "$" || character === "`") {
+        return null;
+      } else {
+        current += character;
+      }
+      continue;
+    }
+
+    if (character === "\n" || character === "\r") {
+      return null;
+    } else if (/\s/.test(character)) {
+      finishWord();
+    } else if (character === "'") {
+      state = "single";
+      started = true;
+    } else if (character === '"') {
+      state = "double";
+      started = true;
+    } else if (character === "\\") {
+      index += 1;
+      if (index >= command.length) return null;
+      current += command[index];
+      started = true;
+    } else if ("|&;<>()$`*?[]{}~#".includes(character)) {
+      return null;
+    } else {
+      current += character;
+      started = true;
+    }
+  }
+  if (state !== "unquoted") return null;
+  finishWord();
+  if (words.length === 0 || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) return null;
+  return words;
 }
 
 export async function findInstalledWindowsWebApp({ config, chrome, windowsEnvironment, interop }) {
