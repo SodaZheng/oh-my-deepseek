@@ -1,4 +1,4 @@
-export function renderWindowsHiddenLauncher({ programPath, programArguments, missingTitle, missingMessage }) {
+export function renderWindowsHiddenLauncher({ programPath, programArguments, missingTitle, missingMessage, waitForExit = false }) {
   return `var shell = new ActiveXObject("WScript.Shell");
 var fileSystem = new ActiveXObject("Scripting.FileSystemObject");
 var programPath = ${stringifyForJScript(programPath)};
@@ -15,7 +15,7 @@ function quoteArgument(value, force) {
 var commandParts = [quoteArgument(programPath, true)];
 for (var index = 0; index < programArguments.length; index += 1) commandParts.push(quoteArgument(programArguments[index], false));
 var command = commandParts.join(' ');
-WScript.Quit(shell.Run(command, 0, true));
+WScript.Quit(shell.Run(command, 0, ${waitForExit ? "true" : "false"}));
 `;
 }
 

@@ -36,7 +36,7 @@ oh-my-deepseek create
 - 启动超时：45 秒
 - WSL 服务启动：创建入口时解析命令，点击后直接执行，不常驻后台
 
-macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.app`，并在桌面创建快捷入口。它就是唯一的可见 App，可直接从 `~/Applications` 拖入 Dock。Windows 会把启动文件放在 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，并在桌面创建 `.lnk`。快捷方式通过无控制台的 Windows Script Host 直接启动 Node 监督器，不再经过常驻 PowerShell 启动层；`launcher.js` 使用无 BOM 的纯 ASCII 内容，Unicode 路径和提示以 `\uXXXX` 表示，兼容经典 JScript 引擎。旧快捷方式需要重新运行一次 `oh-my-deepseek create` 才能更新。
+macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.app`，并在桌面创建快捷入口。它就是唯一的可见 App，可直接从 `~/Applications` 拖入 Dock。Windows 会把启动文件放在 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，并在桌面创建 `.lnk`。快捷方式通过无控制台的 Windows Script Host 启动 Node 监督器后立即退出，不再让 WScript 或 PowerShell 在整个 App 生命周期中保持运行；`launcher.js` 使用无 BOM 的纯 ASCII 内容，Unicode 路径和提示以 `\uXXXX` 表示，兼容经典 JScript 引擎。旧快捷方式需要重新运行一次 `oh-my-deepseek create` 才能更新。
 
 在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式：桌面仍生成 Windows `.lnk`，点击后由 Windows Script Host 直接调用 `wsl.exe`，静默进入创建时使用的发行版和用户。生成入口时工具会提前解析 `dsh` 等简单服务命令的绝对可执行路径和参数；点击时监督器直接执行该入口，跳过交互式登录 shell、启动脚本和重复的命令发现。宿主机无需重复安装 Node.js 或 DSH，也不会安装常驻预热进程。
 

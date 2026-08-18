@@ -87,6 +87,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.match(hiddenLauncher, /C:\\\\Windows\\\\System32\\\\wsl\.exe/);
   assert.match(hiddenLauncher, /--distribution/);
   assert.match(hiddenLauncher, /--exec/);
+  assert.match(hiddenLauncher, /shell\.Run\(command, 0, false\)/);
   assert.doesNotMatch(hiddenLauncher, /powershell\.exe/i);
   const shortcutOptions = JSON.parse(await readFile(shortcut, "utf8"));
   assert.match(shortcutOptions.launcherPath, /launcher\.js$/i);

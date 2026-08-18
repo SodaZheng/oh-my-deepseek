@@ -114,6 +114,7 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
     programArguments: expectedArguments,
     missingTitle: "Missing Node",
     missingMessage: "Node missing",
+    waitForExit: true,
   }));
   const argumentResult = spawnSync("cscript.exe", ["//B", "//NoLogo", argumentLauncherPath], {
     encoding: "utf8",
@@ -121,4 +122,29 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   });
   assert.equal(argumentResult.status, 0, argumentResult.stderr || argumentResult.stdout);
   assert.deepEqual(JSON.parse(await readFile(argumentOutputPath, "utf8")), expectedArguments.slice(1));
+
+  const detachedProbePath = path.join(root, "detached probe.mjs");
+  const detachedMarkerPath = path.join(root, "detached marker.txt");
+  const detachedLauncherPath = path.join(root, "detached-launcher.js");
+  await writeFile(
+    detachedProbePath,
+    `import { writeFileSync } from "node:fs";\nsetTimeout(() => writeFileSync(${JSON.stringify(detachedMarkerPath)}, "continued"), 1500);\n`,
+  );
+  await writeFile(detachedLauncherPath, renderWindowsHiddenLauncher({
+    programPath: process.execPath,
+    programArguments: [detachedProbePath],
+    missingTitle: "Missing Node",
+    missingMessage: "Node missing",
+  }));
+  const detachedResult = spawnSync("cscript.exe", ["//B", "//NoLogo", detachedLauncherPath], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  assert.equal(detachedResult.status, 0, detachedResult.stderr || detachedResult.stdout);
+  assert.equal(await pathExists(detachedMarkerPath), false, "WScript waited for the child process instead of exiting immediately");
+  const detachedDeadline = Date.now() + 5000;
+  while (!(await pathExists(detachedMarkerPath)) && Date.now() < detachedDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(await pathExists(detachedMarkerPath), true, "child process stopped when WScript exited");
 });

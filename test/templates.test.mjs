@@ -58,7 +58,7 @@ test("Windows templates run a hidden lifecycle supervisor", () => {
   const supervisor = renderSupervisor();
   const shortcut = renderWindowsShortcutScript();
   assert.match(hiddenLauncher, /WScript\.Shell/);
-  assert.match(hiddenLauncher, /shell\.Run\(command, 0, true\)/);
+  assert.match(hiddenLauncher, /shell\.Run\(command, 0, false\)/);
   assert.doesNotMatch(hiddenLauncher, /powershell\.exe/i);
   assert.equal(hiddenLauncher.includes('replace(/(\\\\*)"/g'), true);
   assert.match(hiddenLauncher, /if \(!force && value\.length > 0/);
