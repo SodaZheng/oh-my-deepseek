@@ -68,66 +68,14 @@ exit 0
 `;
 }
 
-export function renderMacChromeLauncher(config, appReadyPath) {
-  return `#!/bin/zsh
-
-set -u
-
-readonly app_name=${shellQuote(config.name)}
-readonly node_path=${shellQuote(config.nodePath)}
-readonly app_ready_path=${shellQuote(appReadyPath)}
-readonly timeout_seconds=${config.timeoutSeconds}
-readonly contents_dir="\${0:A:h:h}"
-readonly supervisor="\${contents_dir}/Resources/supervisor.mjs"
-readonly app_mode_loader="\${contents_dir}/MacOS/app_mode_loader"
-
-if [[ ! -x "\${node_path}" ]]; then
-  /usr/bin/osascript - "找不到 Node.js" "创建 \${app_name} 时使用的 Node.js 已被移动或删除：\${node_path}" <<'APPLESCRIPT' >/dev/null 2>&1
-on run arguments
-  display alert (item 1 of arguments) message (item 2 of arguments) as critical buttons {"好"} default button "好"
-end run
-APPLESCRIPT
-  exit 1
-fi
-
-if [[ ! -x "\${app_mode_loader}" ]]; then
-  /usr/bin/osascript - "无法启动 \${app_name}" "App 内缺少 Chrome App Mode Loader，请重新运行 oh-my-deepseek create。" <<'APPLESCRIPT' >/dev/null 2>&1
-on run arguments
-  display alert (item 1 of arguments) message (item 2 of arguments) as critical buttons {"好"} default button "好"
-end run
-APPLESCRIPT
-  exit 1
-fi
-
-/usr/bin/nohup "\${node_path}" "\${supervisor}" >/dev/null 2>&1 &
-readonly supervisor_pid=$!
-readonly deadline=$((SECONDS + timeout_seconds + 5))
-
-while (( SECONDS < deadline )); do
-  if [[ -f "\${app_ready_path}" ]]; then
-    ready_pid="$(/bin/cat "\${app_ready_path}" 2>/dev/null || true)"
-    if [[ "\${ready_pid}" == <-> ]] && /bin/kill -0 "\${ready_pid}" 2>/dev/null; then
-      exec "\${app_mode_loader}"
-    fi
-  fi
-  if ! /bin/kill -0 "\${supervisor_pid}" 2>/dev/null; then
-    exit 1
-  fi
-  /bin/sleep 0.1
-done
-
-exit 1
-`;
-}
-
-export function renderMacChromeAppInfo({ config, appId, chromeVersion, chromeBundleVersion, appDataPath }) {
+export function renderMacChromeShimInfo({ config, appId, chromeVersion, chromeBundleVersion, appDataPath }) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleName</key><string>${xmlEscape(config.name)}</string>
   <key>CFBundleDisplayName</key><string>${xmlEscape(config.name)}</string>
-  <key>CFBundleExecutable</key><string>launcher</string>
+  <key>CFBundleExecutable</key><string>app_mode_loader</string>
   <key>CFBundleIdentifier</key><string>com.google.Chrome.app.${appId}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -145,8 +93,168 @@ export function renderMacChromeAppInfo({ config, appId, chromeVersion, chromeBun
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSAppleScriptEnabled</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>OMDConfigVersion</key><integer>${CONFIG_VERSION}</integer>
-  <key>OMDGeneratedBy</key><string>${GENERATED_BY}</string>
 </dict></plist>
+`;
+}
+
+export function renderMacMonitor() {
+  return `import { appendFileSync, closeSync, openSync, readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import net from "node:net";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = path.dirname(fileURLToPath(import.meta.url));
+const config = JSON.parse(readFileSync(path.join(root, "monitor-config.json"), "utf8"));
+let activeSupervisor = null;
+let stopping = false;
+
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
+
+writeLog("启动 macOS App 监视器");
+await main();
+
+async function main() {
+  while (!stopping) {
+    const appPids = findAppPids();
+    if (appPids.length === 0) {
+      await delay(100);
+      continue;
+    }
+
+    if (await serviceIsReady()) {
+      writeLog(\`检测到 App PID \${appPids.join(",")}；服务已由外部提供，不接管\`);
+      await waitForAppProcessesToExit();
+      continue;
+    }
+
+    writeLog(\`拦截冷启动 App PID \${appPids.join(",")}，准备服务\`);
+    await terminateAppProcesses();
+    if (stopping) break;
+    await runSupervisor();
+  }
+}
+
+function findAppPids() {
+  const result = spawnSync("/bin/ps", ["-ax", "-o", "pid=,command="], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return [];
+  const pids = [];
+  for (const line of result.stdout.split("\\n")) {
+    const match = line.match(/^\\s*(\\d+)\\s+(.+)$/);
+    if (match && match[2].startsWith(config.appExecutablePath)) pids.push(Number(match[1]));
+  }
+  return pids;
+}
+
+async function terminateAppProcesses() {
+  const deadline = Date.now() + 3000;
+  let missingSince = null;
+  while (!stopping && Date.now() < deadline) {
+    const pids = findAppPids();
+    if (pids.length === 0) {
+      missingSince ??= Date.now();
+      if (Date.now() - missingSince >= 300) return;
+    } else {
+      missingSince = null;
+      for (const pid of pids) {
+        try { process.kill(pid, "SIGTERM"); } catch (error) { if (error.code !== "ESRCH") writeLog(\`停止 App PID \${pid} 失败：\${error.message}\`); }
+      }
+    }
+    await delay(50);
+  }
+  for (const pid of findAppPids()) {
+    try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") writeLog(\`强制停止 App PID \${pid} 失败：\${error.message}\`); }
+  }
+  await delay(150);
+}
+
+async function runSupervisor() {
+  appendFileSync(config.logPath, \`[\${new Date().toISOString()}] 监视器启动监督器\\n\`);
+  const descriptor = openSync(config.logPath, "a", 0o600);
+  activeSupervisor = spawn(config.nodePath, [config.supervisorPath], {
+    stdio: ["ignore", descriptor, descriptor],
+  });
+  closeSync(descriptor);
+  const exitCode = await new Promise((resolve) => {
+    activeSupervisor.once("error", (error) => {
+      writeLog(\`监督器进程错误：\${error.message}\`);
+      resolve(1);
+    });
+    activeSupervisor.once("exit", (code) => resolve(code ?? 1));
+  });
+  activeSupervisor = null;
+  writeLog(\`监督器已退出，状态码 \${exitCode}\`);
+  await delay(250);
+}
+
+async function waitForAppProcessesToExit() {
+  while (!stopping && findAppPids().length > 0) await delay(250);
+}
+
+function serviceIsReady() {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: config.readyHost, port: config.readyPort });
+    let settled = false;
+    const finish = (ready) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(ready);
+    };
+    socket.setTimeout(300);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+}
+
+function stop() {
+  stopping = true;
+  if (activeSupervisor && activeSupervisor.exitCode === null) {
+    try { activeSupervisor.kill("SIGTERM"); } catch {}
+  }
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function writeLog(message) {
+  appendFileSync(config.logPath, \`[\${new Date().toISOString()}] [monitor] \${message}\\n\`);
+}
+`;
+}
+
+export function renderMacLaunchAgent({ label, programArguments, logPath }) {
+  const argumentsXml = programArguments.map((argument) => `    <string>${xmlEscape(argument)}</string>`).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xmlEscape(label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+${argumentsXml}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>1</integer>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(logPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(logPath)}</string>
+</dict>
+</plist>
 `;
 }

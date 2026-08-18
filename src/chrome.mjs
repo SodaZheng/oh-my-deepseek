@@ -7,9 +7,9 @@ import { isExecutable, pathExists } from "./utils.mjs";
 const bundledMacIcon = fileURLToPath(new URL("../icon.icns", import.meta.url));
 const bundledWindowsIcon = fileURLToPath(new URL("../icon.ico", import.meta.url));
 
-export async function findChrome(config, env = process.env) {
+export async function findChrome(config, env = process.env, wslInterop = defaultWslInterop) {
   if (config.platform === "darwin") return findChromeOnMac(config);
-  if (config.platform === "wsl") return findChromeOnWsl(config);
+  if (config.platform === "wsl") return findChromeOnWsl(config, wslInterop);
   return findChromeOnWindows(config, env);
 }
 
@@ -85,11 +85,11 @@ async function findChromeOnWindows(config, env) {
   throw new Error("未找到 Google Chrome。请先安装 Chrome，或用 --chrome 指定 chrome.exe");
 }
 
-async function findChromeOnWsl(config) {
+async function findChromeOnWsl(config, interop) {
   const defaultIcon = config.icon ?? (await existingBundledIcon(bundledWindowsIcon));
   if (config.chrome) {
-    const windowsPath = isWindowsPath(config.chrome) ? config.chrome : toWindowsPath(config.chrome);
-    if (!windowsPath || !windowsFileExists(windowsPath)) {
+    const windowsPath = isWindowsPath(config.chrome) ? config.chrome : interop.toWindowsPath(config.chrome);
+    if (!windowsPath || !interop.windowsFileExists(windowsPath)) {
       throw new Error(`Windows Chrome 可执行文件不存在：${config.chrome}`);
     }
     return { executable: windowsPath, appBundle: null, icon: defaultIcon };
@@ -97,20 +97,26 @@ async function findChromeOnWsl(config) {
 
   const script = String.raw`
 $Candidates = @(
-  (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
-  $(if ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) { Join-Path ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) 'Google\Chrome\Application\chrome.exe' }),
-  $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe' })
-) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+  @(
+    (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+    $(if ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) { Join-Path ([Environment]::GetEnvironmentVariable('ProgramFiles(x86)')) 'Google\Chrome\Application\chrome.exe' }),
+    $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe' })
+  ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) }
+)
 if ($Candidates.Count -eq 0) { exit 1 }
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::Write($Candidates[0])
 `;
-  const result = runWindowsPowerShell(script);
+  const result = interop.runWindowsPowerShell(script);
   if (result.error || result.status !== 0 || !result.stdout.trim()) {
     const detail = (result.stderr || result.stdout || result.error?.message || "").trim();
     throw new Error(`未在 Windows 宿主机找到 Google Chrome。请先安装 Chrome，或用 --chrome 指定 chrome.exe${detail ? `：${detail}` : ""}`);
   }
-  return { executable: result.stdout.trim(), appBundle: null, icon: defaultIcon };
+  const executable = result.stdout.trim();
+  if (!isWindowsPath(executable) || !interop.windowsFileExists(executable)) {
+    throw new Error(`Windows Chrome 自动探测结果无效：${executable}。请重新运行，或用 --chrome 指定 chrome.exe`);
+  }
+  return { executable, appBundle: null, icon: defaultIcon };
 }
 
 function isWindowsPath(value) {
@@ -141,6 +147,12 @@ function runWindowsPowerShell(script) {
     { encoding: "utf8", windowsHide: true },
   );
 }
+
+const defaultWslInterop = {
+  toWindowsPath,
+  windowsFileExists,
+  runWindowsPowerShell,
+};
 
 async function existingBundledIcon(iconPath) {
   return (await pathExists(iconPath)) ? iconPath : null;

@@ -108,7 +108,7 @@ function processIsAlive(pid) {
 
 async function activateExistingApp() {
   if (config.launchMode === "windows-host-browser") {
-    spawnSync("powershell.exe", [
+    spawnSync(powerShellExecutable(), [
       "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
       "-File", config.hostBrowserScriptPath,
       "-ConfigPath", config.hostBrowserConfigPath,
@@ -169,7 +169,7 @@ async function runWindowsHostBrowser() {
 function startWindowsBrowserBridge() {
   appendFileSync(config.logPath, \`[\${new Date().toISOString()}] 启动 Windows Chrome 桥接器\n\`);
   const descriptor = openSync(config.logPath, "a", 0o600);
-  const child = spawn("powershell.exe", [
+  const child = spawn(powerShellExecutable(), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
     "-File", config.hostBrowserScriptPath,
     "-ConfigPath", config.hostBrowserConfigPath,
@@ -192,7 +192,7 @@ function waitForChildExit(child) {
 
 function stopWindowsBrowserBridge() {
   if (config.launchMode !== "windows-host-browser") return;
-  spawnSync("powershell.exe", [
+  spawnSync(powerShellExecutable(), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
     "-File", config.hostBrowserScriptPath,
     "-ConfigPath", config.hostBrowserConfigPath,
@@ -248,7 +248,7 @@ function startService() {
   appendFileSync(config.logPath, \`\\n[\${new Date().toISOString()}] 启动服务：\${config.serviceCommand}\\n\`);
   const descriptor = openSync(config.logPath, "a", 0o600);
   const child = config.platform === "win32"
-    ? spawn("powershell.exe", ["-NoLogo", "-WindowStyle", "Hidden", "-Command", config.serviceCommand], {
+    ? spawn(powerShellExecutable(), ["-NoLogo", "-WindowStyle", "Hidden", "-Command", config.serviceCommand], {
         cwd: config.workingDirectory,
         detached: true,
         windowsHide: true,
@@ -479,12 +479,18 @@ function showError(title, message) {
   }
   const ps = \`Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(\${psQuote(message)}, \${psQuote(title)}, 'OK', 'Error') | Out-Null\`;
   const encoded = Buffer.from(ps, "utf16le").toString("base64");
-  const alert = spawn("powershell.exe", ["-NoLogo", "-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", encoded], {
+  const alert = spawn(powerShellExecutable(), ["-NoLogo", "-NoProfile", "-WindowStyle", "Hidden", "-EncodedCommand", encoded], {
     detached: true,
     windowsHide: true,
     stdio: "ignore",
   });
   alert.unref();
+}
+
+function powerShellExecutable() {
+  return config.platform === "wsl" && config.powerShellPath
+    ? config.powerShellPath
+    : "powershell.exe";
 }
 
 function psQuote(value) {

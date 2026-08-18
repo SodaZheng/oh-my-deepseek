@@ -1,10 +1,11 @@
-import { copyFile, mkdtemp, readFile, rename } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rename } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
-import { renderWindowsShortcutScript } from "../templates/windows.mjs";
-import { renderWindowsHostBrowser, renderWslWindowsLauncher } from "../templates/wsl.mjs";
+import { renderWindowsHiddenLauncher, renderWindowsShortcutScript } from "../templates/windows.mjs";
+import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
 import { ensureDirectory, pathExists, removeExactTarget, writeText } from "../utils.mjs";
 
 export async function createWslLauncher(config, chrome, interop = defaultInterop) {
@@ -22,6 +23,8 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   const hostSupportDirectory = path.win32.join(hostSupportRoot, appKey);
   const hostSupportRootWsl = interop.toWslPath(hostSupportRoot);
   const hostSupportDirectoryWsl = interop.toWslPath(hostSupportDirectory);
+  const powerShellPathWsl = interop.toWslPath(windowsEnvironment.powerShell);
+  const installedWebApp = await findInstalledWindowsWebApp({ config, chrome, windowsEnvironment, interop });
   const chromeProfilePath = path.win32.join(windowsEnvironment.localAppData, "Oh My DeepSeek", "profiles", appKey);
   const chromeProfilePathWsl = interop.toWslPath(chromeProfilePath);
   const shortcutDirectory = config.output ? interop.toWindowsPath(config.output) : windowsEnvironment.desktop;
@@ -35,6 +38,10 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     supportDirectory,
     hostSupportDirectory,
     chromePath: chrome.executable,
+    powerShellPath: powerShellPathWsl,
+    usesInstalledPwa: Boolean(installedWebApp),
+    chromeAppId: installedWebApp?.appId ?? null,
+    chromeProfileDirectory: installedWebApp?.profileDirectory ?? null,
     wslDistro: config.wslDistro,
     url: config.url,
     serviceCommand: config.serviceCommand,
@@ -72,6 +79,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       readyPort: config.readyPort,
       timeoutSeconds: config.timeoutSeconds,
       chromePath: chrome.executable,
+      powerShellPath: powerShellPathWsl,
       nodePath: config.nodePath,
       chromeProfilePath: chromeProfilePathWsl,
       hostBrowserScriptPath,
@@ -90,6 +98,10 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       timeoutSeconds: config.timeoutSeconds,
       chromePath: chrome.executable,
       chromeProfilePath,
+      launchMode: installedWebApp ? "installed-pwa" : "url-app",
+      pwaLauncherPath: installedWebApp?.launcherPath ?? null,
+      pwaArguments: installedWebApp?.arguments ?? [],
+      windowHandlePath: path.win32.join(hostSupportDirectory, "app-window.txt"),
       browserPidPath: path.win32.join(hostSupportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,
     };
@@ -98,13 +110,25 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       configVersion: CONFIG_VERSION,
       distro: config.wslDistro,
       user: config.wslUser,
+      wslPath: windowsEnvironment.wsl,
       nodePath: config.nodePath,
       supervisorPath: path.join(supportDirectory, "supervisor.mjs"),
     };
 
     await writeText(path.join(stagingDirectory, "config.json"), `${JSON.stringify(storedConfig, null, 2)}\n`);
     await writeText(path.join(stagingDirectory, "supervisor.mjs"), renderSupervisor());
-    await writeText(path.join(hostStagingDirectory, "launcher.ps1"), withUtf8Bom(renderWslWindowsLauncher()));
+    const wslArguments = ["--distribution", config.wslDistro];
+    if (config.wslUser) wslArguments.push("--user", config.wslUser);
+    wslArguments.push("--exec", config.nodePath, path.join(supportDirectory, "supervisor.mjs"));
+    await writeText(
+      path.join(hostStagingDirectory, "launcher.js"),
+      renderWindowsHiddenLauncher({
+        programPath: windowsEnvironment.wsl,
+        programArguments: wslArguments,
+        missingTitle: "找不到 WSL",
+        missingMessage: `找不到 Windows WSL 启动器：${windowsEnvironment.wsl}`,
+      }),
+    );
     await writeText(path.join(hostStagingDirectory, "browser-host.ps1"), withUtf8Bom(renderWindowsHostBrowser()));
     await writeText(path.join(hostStagingDirectory, "create-shortcut.ps1"), withUtf8Bom(renderWindowsShortcutScript()));
     await writeText(path.join(hostStagingDirectory, "wsl-launch.json"), `${JSON.stringify(launchConfig, null, 2)}\n`);
@@ -125,7 +149,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
 
   interop.createShortcut({
     shortcutPath,
-    launcherPath: path.win32.join(hostSupportDirectory, "launcher.ps1"),
+    launcherPath: path.win32.join(hostSupportDirectory, "launcher.js"),
     supportDirectory: hostSupportDirectory,
     iconPath: installedIconPath,
     description: `${config.name} — 在 WSL 启动服务，再以 Windows Chrome App 模式打开`,
@@ -140,6 +164,8 @@ const defaultInterop = {
 $Value = @{
   localAppData = [Environment]::GetFolderPath('LocalApplicationData')
   desktop = [Environment]::GetFolderPath('Desktop')
+  powerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
+  wsl = (Get-Command wsl.exe -ErrorAction Stop).Source
 }
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::Write(($Value | ConvertTo-Json -Compress))
@@ -150,7 +176,7 @@ $Value = @{
     }
     try {
       const value = JSON.parse(result.stdout.trim());
-      if (!value.localAppData || !value.desktop) throw new Error("目录为空");
+      if (!value.localAppData || !value.desktop || !value.powerShell || !value.wsl) throw new Error("目录、PowerShell 或 WSL 路径为空");
       return value;
     } catch (error) {
       throw new Error(`无法解析 Windows 用户目录：${error.message}`);
@@ -230,4 +256,76 @@ async function assertSupervisorNotRunning(lockPath) {
   } catch (error) {
     if (error?.message?.includes("当前 App")) throw error;
   }
+}
+
+export async function findInstalledWindowsWebApp({ config, chrome, windowsEnvironment, interop }) {
+  const userDataDirectory = path.win32.join(windowsEnvironment.localAppData, "Google", "Chrome", "User Data");
+  const userDataDirectoryWsl = interop.toWslPath(userDataDirectory);
+  let entries;
+  try {
+    entries = await readdir(userDataDirectoryWsl, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const profileDirectories = entries
+    .filter((entry) => entry.isDirectory() && (entry.name === "Default" || /^Profile \d+$/.test(entry.name)))
+    .map((entry) => entry.name)
+    .sort((left, right) => left === "Default" ? -1 : right === "Default" ? 1 : left.localeCompare(right));
+  const preferredAppId = config.chromeAppId;
+  if (preferredAppId && !/^[a-p]{32}$/.test(preferredAppId)) {
+    throw new Error("--chrome-app-id 必须是 32 位 a-p 字符串");
+  }
+
+  for (const profileDirectory of profileDirectories) {
+    const profileRoot = path.join(userDataDirectoryWsl, profileDirectory);
+    const manifestRoot = path.join(profileRoot, "Web Applications", "Manifest Resources");
+    let appIds;
+    try {
+      appIds = (await readdir(manifestRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && /^[a-p]{32}$/.test(entry.name))
+        .map((entry) => entry.name);
+    } catch {
+      continue;
+    }
+    if (preferredAppId) {
+      if (appIds.includes(preferredAppId)) return buildInstalledWindowsWebApp(chrome, interop, preferredAppId, profileDirectory);
+      continue;
+    }
+    const databaseDirectory = path.join(profileRoot, "Sync Data", "LevelDB");
+    let databaseFiles;
+    try {
+      databaseFiles = (await readdir(databaseDirectory, { withFileTypes: true }))
+        .filter((entry) => entry.isFile())
+        .map((entry) => path.join(databaseDirectory, entry.name));
+    } catch {
+      continue;
+    }
+    const urlBytes = Buffer.from(config.url);
+    for (const databaseFile of databaseFiles) {
+      let data;
+      try { data = await readFile(databaseFile); } catch { continue; }
+      for (const appId of appIds) {
+        const appIdBytes = Buffer.from(appId);
+        let offset = data.indexOf(appIdBytes);
+        while (offset !== -1) {
+          const nearby = data.subarray(Math.max(0, offset - 4096), Math.min(data.length, offset + appIdBytes.length + 4096));
+          if (nearby.indexOf(urlBytes) !== -1) return buildInstalledWindowsWebApp(chrome, interop, appId, profileDirectory);
+          offset = data.indexOf(appIdBytes, offset + appIdBytes.length);
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function buildInstalledWindowsWebApp(chrome, interop, appId, profileDirectory) {
+  const proxyPath = path.win32.join(path.win32.dirname(chrome.executable), "chrome_proxy.exe");
+  const proxyPathWsl = interop.toWslPath(proxyPath);
+  const launcherPath = existsSync(proxyPathWsl) ? proxyPath : chrome.executable;
+  return {
+    appId,
+    profileDirectory,
+    launcherPath,
+    arguments: [`--profile-directory=${profileDirectory}`, `--app-id=${appId}`],
+  };
 }

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
-import { renderMacInfoPlist, renderMacLauncher } from "../src/templates/macos.mjs";
+import { renderMacInfoPlist, renderMacLaunchAgent, renderMacLauncher, renderMacMonitor } from "../src/templates/macos.mjs";
+import { renderMacNativeMonitorSource } from "../src/templates/macos-native-monitor.mjs";
 import { renderSupervisor } from "../src/templates/supervisor.mjs";
-import { renderWindowsLauncher, renderWindowsShortcutScript } from "../src/templates/windows.mjs";
-import { renderWindowsHostBrowser, renderWslWindowsLauncher } from "../src/templates/wsl.mjs";
+import { renderWindowsHiddenLauncher, renderWindowsShortcutScript } from "../src/templates/windows.mjs";
+import { renderWindowsHostBrowser } from "../src/templates/wsl.mjs";
 
 const macConfig = normalizeCreateOptions(
   { name: "Agent & Tools", command: "npm run dev", url: "http://localhost:5173" },
@@ -25,24 +26,58 @@ test("macOS templates preserve config and escape plist values", () => {
   assert.match(supervisor, /stopProcessTree/);
 });
 
+test("macOS monitor and LaunchAgent templates stay invisible while supervising cold starts", () => {
+  const monitor = renderMacMonitor();
+  const nativeMonitor = renderMacNativeMonitorSource();
+  const launchAgent = renderMacLaunchAgent({
+    label: "dev.ohmydeepseek.monitor.test",
+    programArguments: ["/opt/node & tools/bin/node", "/tmp/monitor.mjs"],
+    logPath: "/tmp/monitor.log",
+  });
+  assert.match(monitor, /terminateAppProcesses/);
+  assert.match(monitor, /runSupervisor/);
+  assert.match(monitor, /serviceIsReady/);
+  assert.match(nativeMonitor, /forKeyPath:@"runningApplications"/);
+  assert.match(nativeMonitor, /runningApplicationsWithBundleIdentifier/);
+  assert.match(nativeMonitor, /launchAndReturnError/);
+  assert.match(launchAgent, /dev\.ohmydeepseek\.monitor\.test/);
+  assert.match(launchAgent, /<string>Background<\/string>/);
+  assert.match(launchAgent, /<string>Aqua<\/string>/);
+  assert.match(launchAgent, /\/opt\/node &amp; tools\/bin\/node/);
+});
+
 test("Windows templates run a hidden lifecycle supervisor", () => {
-  const config = normalizeCreateOptions(
-    { name: "Agent", command: "dsh web", url: "http://127.0.0.1:3080" },
-    { platform: "win32", cwd: "C:\\project" },
-  );
-  const launcher = renderWindowsLauncher(config);
+  const hiddenLauncher = renderWindowsHiddenLauncher({
+    programPath: "C:\\程序\\node.exe",
+    programArguments: ["C:\\应用\\supervisor.mjs"],
+    missingTitle: "找不到 Node",
+    missingMessage: "Node 已移动",
+  });
   const supervisor = renderSupervisor();
   const shortcut = renderWindowsShortcutScript();
-  assert.match(launcher, /supervisor\.mjs/);
-  assert.doesNotMatch(launcher, /WindowStyle Normal/);
+  assert.match(hiddenLauncher, /WScript\.Shell/);
+  assert.match(hiddenLauncher, /shell\.Run\(command, 0, true\)/);
+  assert.doesNotMatch(hiddenLauncher, /powershell\.exe/i);
+  assert.equal(hiddenLauncher.includes('replace(/(\\\\*)"/g'), true);
+  assert.match(hiddenLauncher, /if \(!force && value\.length > 0/);
+  assert.match(hiddenLauncher, /quoteArgument\(programPath, true\)/);
+  assert.match(hiddenLauncher, /quoteArgument\(programArguments\[index\], false\)/);
+  assert.equal(/[^\x00-\x7f]/.test(hiddenLauncher), false);
+  assert.match(hiddenLauncher, /\\u7a0b\\u5e8f/);
   assert.match(supervisor, /powershell\.exe/);
   assert.match(supervisor, /taskkill\.exe/);
-  assert.match(shortcut, /WindowStyle Hidden/);
+  assert.match(shortcut, /wscript\.exe/);
+  assert.doesNotMatch(shortcut, /TargetPath = \(Get-Command powershell\.exe\)/);
   assert.match(shortcut, /CreateShortcut/);
 });
 
 test("WSL templates keep service ownership in Linux and browser ownership in Windows", () => {
-  const launcher = renderWslWindowsLauncher();
+  const launcher = renderWindowsHiddenLauncher({
+    programPath: "C:\\Windows\\System32\\wsl.exe",
+    programArguments: ["--distribution", "Ubuntu", "--exec", "/usr/bin/node", "/app/supervisor.mjs"],
+    missingTitle: "Missing WSL",
+    missingMessage: "WSL moved",
+  });
   const browserHost = renderWindowsHostBrowser();
   const supervisor = renderSupervisor();
   assert.match(launcher, /wsl\.exe/);
@@ -50,7 +85,20 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(launcher, /--exec/);
   assert.match(browserHost, /DevToolsActivePort/);
   assert.match(browserHost, /Get-TargetSnapshot/);
+  assert.match(browserHost, /installed-pwa/);
+  assert.match(browserHost, /class OmdChromeWindow/);
+  assert.match(browserHost, /Start-PwaWindow/);
+  assert.match(browserHost, /GetWindows\(string executablePath\)/);
+  assert.match(browserHost, /PostMessage\(hwnd, 0x0010/);
   assert.match(browserHost, /taskkill\.exe/);
+  assert.match(browserHost, /\('--app=' \+ \[string\]\$Config\.url\)/);
+  assert.match(browserHost, /--window-position=100,100/);
+  assert.match(browserHost, /--window-size=1280,800/);
+  assert.match(browserHost, /function Run-BrowserLifecycle \{[\s\S]*Wait-ForHostService \$ServiceDeadline[\s\S]*Start-HostChrome/);
+  assert.doesNotMatch(browserHost, /Preparing%20Chrome%20Runtime|--window-position=-10000,-10000|function Open-AppWindow/);
   assert.match(supervisor, /windows-host-browser/);
   assert.match(supervisor, /serviceShell/);
+  assert.match(supervisor, /function powerShellExecutable/);
+  assert.match(supervisor, /const alert = spawn\(powerShellExecutable\(\)/);
+  assert.doesNotMatch(supervisor, /spawn(?:Sync)?\("powershell\.exe"/);
 });

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
-import { createWslLauncher } from "../src/platform/wsl.mjs";
+import { createWslLauncher, findInstalledWindowsWebApp } from "../src/platform/wsl.mjs";
 import { pathExists } from "../src/utils.mjs";
 
 test("creates a Windows shortcut payload while keeping the supervisor in WSL", async () => {
@@ -34,6 +34,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
       return {
         localAppData: String.raw`C:\Users\tester\AppData\Local`,
         desktop: String.raw`C:\Users\tester\Desktop`,
+        powerShell: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+        wsl: String.raw`C:\Windows\System32\wsl.exe`,
       };
     },
     toWslPath: toLocalPath,
@@ -56,12 +58,55 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(await pathExists(shortcut), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "supervisor.mjs")), true);
   assert.equal(await pathExists(path.join(hostSupport, "browser-host.ps1")), true);
-  assert.equal(await pathExists(path.join(hostSupport, "launcher.ps1")), true);
+  assert.equal(await pathExists(path.join(hostSupport, "launcher.ps1")), false);
+  assert.equal(await pathExists(path.join(hostSupport, "launcher.js")), true);
+  const hiddenLauncher = await readFile(path.join(hostSupport, "launcher.js"), "utf8");
+  assert.notEqual(hiddenLauncher.charCodeAt(0), 0xfeff);
+  assert.equal(/[^\x00-\x7f]/.test(hiddenLauncher), false);
+  assert.match(hiddenLauncher, /C:\\\\Windows\\\\System32\\\\wsl\.exe/);
+  assert.match(hiddenLauncher, /--distribution/);
+  assert.match(hiddenLauncher, /--exec/);
+  assert.doesNotMatch(hiddenLauncher, /powershell\.exe/i);
+  const shortcutOptions = JSON.parse(await readFile(shortcut, "utf8"));
+  assert.match(shortcutOptions.launcherPath, /launcher\.js$/i);
   const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
   assert.equal(storedConfig.platform, "wsl");
   assert.equal(storedConfig.launchMode, "windows-host-browser");
   assert.equal(storedConfig.serviceShell, "/bin/bash");
+  assert.match(storedConfig.powerShellPath, /Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe$/i);
   const launchConfig = JSON.parse(await readFile(path.join(hostSupport, "wsl-launch.json"), "utf8"));
   assert.equal(launchConfig.distro, "Ubuntu-Test");
   assert.equal(launchConfig.user, "tester");
+  assert.match(launchConfig.wslPath, /wsl\.exe$/i);
+  const browserConfig = JSON.parse(await readFile(path.join(hostSupport, "browser-config.json"), "utf8"));
+  assert.equal(browserConfig.launchMode, "url-app");
+});
+
+test("detects a Windows Chrome installed PWA for the configured WSL URL", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "oh-my-deepseek-wsl-pwa-test-"));
+  const toLocalPath = (windowsPath) => path.join(root, "windows", windowsPath[0].toLowerCase(), ...windowsPath.slice(3).split("\\"));
+  const localAppData = String.raw`C:\Users\tester\AppData\Local`;
+  const chromeExecutable = String.raw`C:\Program Files\Google\Chrome\Application\chrome.exe`;
+  const appId = "a".repeat(32);
+  const profileRoot = toLocalPath(path.win32.join(localAppData, "Google", "Chrome", "User Data", "Default"));
+  await mkdir(path.join(profileRoot, "Web Applications", "Manifest Resources", appId), { recursive: true });
+  await mkdir(path.join(profileRoot, "Sync Data", "LevelDB"), { recursive: true });
+  await writeFile(path.join(profileRoot, "Sync Data", "LevelDB", "000001.log"), `prefix-${appId}-http://127.0.0.1:3080/-suffix`);
+  const proxyPath = path.win32.join(path.win32.dirname(chromeExecutable), "chrome_proxy.exe");
+  await mkdir(path.dirname(toLocalPath(proxyPath)), { recursive: true });
+  await writeFile(toLocalPath(proxyPath), "proxy");
+
+  const detected = await findInstalledWindowsWebApp({
+    config: { url: "http://127.0.0.1:3080/", chromeAppId: null },
+    chrome: { executable: chromeExecutable },
+    windowsEnvironment: { localAppData },
+    interop: { toWslPath: toLocalPath },
+  });
+
+  assert.deepEqual(detected, {
+    appId,
+    profileDirectory: "Default",
+    launcherPath: proxyPath,
+    arguments: ["--profile-directory=Default", `--app-id=${appId}`],
+  });
 });

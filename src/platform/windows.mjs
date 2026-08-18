@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import {
-  renderWindowsLauncher,
+  renderWindowsHiddenLauncher,
   renderWindowsShortcutScript,
 } from "../templates/windows.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
@@ -59,7 +59,15 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       logPath,
     };
     await writeText(path.join(stagingDirectory, "config.json"), `${JSON.stringify(storedConfig, null, 2)}\n`);
-    await writeText(path.join(stagingDirectory, "launcher.ps1"), withUtf8Bom(renderWindowsLauncher(config)));
+    await writeText(
+      path.join(stagingDirectory, "launcher.js"),
+      renderWindowsHiddenLauncher({
+        programPath: config.nodePath,
+        programArguments: [path.join(supportDirectory, "supervisor.mjs")],
+        missingTitle: "找不到 Node.js",
+        missingMessage: `创建 ${config.name} 时使用的 Node.js 已被移动或删除：${config.nodePath}`,
+      }),
+    );
     await writeText(path.join(stagingDirectory, "supervisor.mjs"), renderSupervisor());
     await writeText(path.join(stagingDirectory, "create-shortcut.ps1"), withUtf8Bom(renderWindowsShortcutScript()));
     if (chrome.icon && path.extname(chrome.icon).toLowerCase() === ".ico") {
@@ -75,7 +83,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
 
   createWindowsShortcut({
     shortcutPath,
-    launcherPath: path.join(supportDirectory, "launcher.ps1"),
+    launcherPath: path.join(supportDirectory, "launcher.js"),
     supportDirectory,
     iconPath: installedIconPath,
     description: `${config.name} — 先启动服务，再以 Chrome App 模式打开`,

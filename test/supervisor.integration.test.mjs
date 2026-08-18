@@ -114,6 +114,7 @@ test("WSL supervisor owns the Linux service while a Windows browser bridge owns 
       readyPort: servicePort,
       timeoutSeconds: 10,
       chromePath: "C:\\Chrome\\chrome.exe",
+      powerShellPath: fakePowerShell,
       nodePath: process.execPath,
       chromeProfilePath: profilePath,
       hostBrowserScriptPath: bridgePath,
@@ -126,7 +127,7 @@ test("WSL supervisor owns the Linux service while a Windows browser bridge owns 
 
   const supervisor = spawn(process.execPath, [supervisorPath], {
     stdio: "ignore",
-    env: { ...process.env, PATH: `${binDirectory}${path.delimiter}${process.env.PATH}` },
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
   });
   const [exitCode] = await Promise.race([
     once(supervisor, "exit"),
