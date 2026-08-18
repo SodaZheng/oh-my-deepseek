@@ -1,7 +1,7 @@
 export const PACKAGE_NAME = "oh-my-deepseek";
 export const PACKAGE_VERSION = "0.5.0";
 export const GENERATED_BY = "oh-my-deepseek";
-export const CONFIG_VERSION = 8;
+export const CONFIG_VERSION = 9;
 
 export const DEFAULTS = Object.freeze({
   name: "DeepSeek Harness",

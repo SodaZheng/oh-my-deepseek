@@ -100,7 +100,6 @@ export function renderMacChromeShimInfo({ config, appId, chromeVersion, chromeBu
 export function renderMacMonitor() {
   return `import { appendFileSync, closeSync, openSync, readFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
-import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -192,21 +191,21 @@ async function waitForAppProcessesToExit() {
   while (!stopping && findAppPids().length > 0) await delay(250);
 }
 
-function serviceIsReady() {
-  return new Promise((resolve) => {
-    const socket = net.createConnection({ host: config.readyHost, port: config.readyPort });
-    let settled = false;
-    const finish = (ready) => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve(ready);
-    };
-    socket.setTimeout(300);
-    socket.once("connect", () => finish(true));
-    socket.once("timeout", () => finish(false));
-    socket.once("error", () => finish(false));
-  });
+async function serviceIsReady() {
+  try {
+    const response = await fetch(config.url, {
+      headers: { "cache-control": "no-cache" },
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!response.ok) return false;
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("text/html")) return true;
+    const html = await response.text();
+    if (!html.includes("<title>DeepSeek Harness</title>")) return true;
+    return html.includes("window.__DSH_BOOT__") && html.includes('"url":"/plugins/');
+  } catch {
+    return false;
+  }
 }
 
 function stop() {

@@ -1,7 +1,6 @@
 export function renderSupervisor() {
   return `import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
-import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -55,7 +54,7 @@ async function main() {
   chromeChild = startChrome(false);
   const [serviceReady] = await Promise.all([serviceReadyPromise, waitForChromeDevTools()]);
   if (!serviceReady) {
-    const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内监听 \${config.readyHost}:\${config.readyPort}\`;
+    const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
     throw new Error(reason);
   }
   if (ownsService) writeLog(\`服务已就绪，PID \${serviceChild.pid}\`);
@@ -151,7 +150,7 @@ async function runWindowsHostBrowser() {
   );
   if (!(await serviceReadyPromise)) {
     stopWindowsBrowserBridge();
-    const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内监听 \${config.readyHost}:\${config.readyPort}\`;
+    const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
     throw new Error(reason);
   }
   if (ownsService) writeLog(\`服务已就绪，PID \${serviceChild.pid}\`);
@@ -205,7 +204,7 @@ async function runChromeAppShim() {
     serviceChild = startService();
     ownsService = true;
     if (!(await waitForService())) {
-      const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内监听 \${config.readyHost}:\${config.readyPort}\`;
+      const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
       throw new Error(reason);
     }
     writeLog(\`服务已就绪，PID \${serviceChild.pid}\`);
@@ -278,19 +277,21 @@ async function waitForService() {
   return serviceIsReady();
 }
 
-function serviceIsReady() {
-  return new Promise((resolve) => {
-    const socket = net.createConnection({ host: config.readyHost, port: config.readyPort });
-    const finish = (ready) => {
-      socket.removeAllListeners();
-      socket.destroy();
-      resolve(ready);
-    };
-    socket.setTimeout(300);
-    socket.once("connect", () => finish(true));
-    socket.once("timeout", () => finish(false));
-    socket.once("error", () => finish(false));
-  });
+async function serviceIsReady() {
+  try {
+    const response = await fetch(config.url, {
+      headers: { "cache-control": "no-cache" },
+      signal: AbortSignal.timeout(1000),
+    });
+    if (!response.ok) return false;
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("text/html")) return true;
+    const html = await response.text();
+    if (!html.includes("<title>DeepSeek Harness</title>")) return true;
+    return html.includes("window.__DSH_BOOT__") && html.includes('"url":"/plugins/');
+  } catch {
+    return false;
+  }
 }
 
 function startChrome(openWindow) {

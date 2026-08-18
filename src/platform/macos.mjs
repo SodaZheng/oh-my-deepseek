@@ -93,6 +93,7 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
         appExecutablePath: path.join(appPath, "Contents", "MacOS", "app_mode_loader"),
         nodePath: config.nodePath,
         supervisorPath,
+        url: config.url,
         readyHost: config.readyHost,
         readyPort: config.readyPort,
         logPath,

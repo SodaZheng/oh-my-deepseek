@@ -2,7 +2,7 @@
 
 把本地 Web 服务变成可以直接双击的 Chrome App。
 
-用户点击入口后，工具会在后台静默启动服务，等待监听端口就绪，再用 Google Chrome 打开无地址栏窗口。关闭该 Chrome App 后，工具会自动停止由本次入口启动的服务进程树。
+用户点击入口后，工具会在后台静默启动服务，等待页面和插件清单就绪，再用 Google Chrome 打开无地址栏窗口。关闭该 Chrome App 后，工具会自动停止由本次入口启动的服务进程树。
 
 同一个 App 在全局只允许一个监督器、一个服务进程树和一个 Chrome App Shim。重复点击只激活现有窗口，不会再打开新的 Chrome。
 
@@ -39,7 +39,7 @@ macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.ap
 
 在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式：桌面仍生成 Windows `.lnk`，点击后由 Windows Script Host 直接调用 `wsl.exe`，静默进入创建时使用的发行版和用户，使用 WSL 内的 Node.js 启动 `dsh web`，再由 Windows 宿主机的 Chrome 打开 App 窗口。宿主机无需重复安装 Node.js 或 DSH。
 
-macOS 会优先检测当前 Chrome 配置中已安装的 Web App，并使用 Chrome 官方 `app_mode_loader` 生成唯一的可见 App。一个由 `launchd` 管理的无界面原生监视器通过 `NSWorkspace.runningApplications` 事件在登录期间等待点击，不做进程轮询：冷启动时先关闭尚未就绪的首次窗口，启动服务，等待端口就绪，再重新打开同一个 App。监视器本身不启动或常驻业务服务；关闭 App 后仍只停止本次接管启动的服务进程树。
+macOS 会优先检测当前 Chrome 配置中已安装的 Web App，并使用 Chrome 官方 `app_mode_loader` 生成唯一的可见 App。一个由 `launchd` 管理的无界面原生监视器通过 `NSWorkspace.runningApplications` 事件在登录期间等待点击，不做进程轮询：冷启动时先关闭尚未就绪的首次窗口，启动服务，等待页面就绪，再重新打开同一个 App。监视器本身不启动或常驻业务服务；关闭 App 后仍只停止本次接管启动的服务进程树。
 
 创建时如果本机可用 Apple Command Line Tools，工具会现场编译并临时签名 universal 原生监视器；如果不可用，则自动回退到兼容的 Node.js 监视器，不影响 App 创建。
 
@@ -108,7 +108,7 @@ oh-my-deepseek create `
 
 ## 启动行为
 
-1. 检查 URL 对应的 TCP 主机和端口。
+1. 请求配置的 URL，确认页面已返回；DeepSeek Harness 还会等待完整的插件启动清单。
 2. 如果已经可用，直接打开 Chrome App，并把该服务视为外部进程。
 3. 如果尚未可用，在后台静默启动服务，并记录本次服务进程树。
 4. macOS 监视器拦截尚未就绪的首次 Shim 进程；服务就绪后重新打开同一个 App。直接模式则打开 `--app=<URL>`。

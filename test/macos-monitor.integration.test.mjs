@@ -28,6 +28,7 @@ test("macOS monitor intercepts a cold App launch and delegates to the supervisor
       appExecutablePath: fakeApp,
       nodePath: process.execPath,
       supervisorPath,
+      url: `http://127.0.0.1:${readyPort}/`,
       readyHost: "127.0.0.1",
       readyPort,
       logPath,

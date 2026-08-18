@@ -116,7 +116,7 @@ function renderHelp(command) {
 
   return `oh-my-deepseek create [选项]
 
-创建一个桌面入口：静默启动本地服务，等待端口就绪，再用 Google Chrome
+创建一个桌面入口：静默启动本地服务，等待页面就绪，再用 Google Chrome
 的 --app 模式打开无地址栏窗口；关闭 App 后自动清理本次启动的服务。
 
 选项：

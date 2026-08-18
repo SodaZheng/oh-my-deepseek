@@ -11,6 +11,8 @@ $DevToolsPortFile = Join-Path $Config.chromeProfilePath 'DevToolsActivePort'
 Add-Type -AssemblyName System.Net.Http
 $HttpClient = [System.Net.Http.HttpClient]::new()
 $HttpClient.Timeout = [TimeSpan]::FromSeconds(2)
+$HttpClient.DefaultRequestHeaders.CacheControl = [System.Net.Http.Headers.CacheControlHeaderValue]::new()
+$HttpClient.DefaultRequestHeaders.CacheControl.NoCache = $true
 $script:BrowserProcess = $null
 
 if ($Config.launchMode -eq 'installed-pwa') {
@@ -160,18 +162,35 @@ function Start-PwaWindow([datetime]$Deadline) {
   throw '无法确认已安装的 Windows Chrome App 窗口已打开'
 }
 
-function Test-TcpPort {
-  $Client = [System.Net.Sockets.TcpClient]::new()
+function Test-HttpService {
+  $Response = $null
   try {
-    $Connect = $Client.BeginConnect([string]$Config.readyHost, [int]$Config.readyPort, $null, $null)
-    if (-not $Connect.AsyncWaitHandle.WaitOne(300)) { return $false }
-    $Client.EndConnect($Connect)
-    return $true
+    $Response = $HttpClient.GetAsync([string]$Config.url).GetAwaiter().GetResult()
+    if (-not $Response.IsSuccessStatusCode) { return $false }
+    $ContentType = [string]$Response.Content.Headers.ContentType
+    if (-not $ContentType.Contains('text/html')) { return $true }
+    $Content = $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    if (-not $Content.Contains('<title>DeepSeek Harness</title>')) { return $true }
+    return $Content.Contains('window.__DSH_BOOT__') -and $Content.Contains('"url":"/plugins/')
   } catch {
     return $false
   } finally {
-    $Client.Dispose()
+    if ($Response) { $Response.Dispose() }
   }
+}
+
+function Wait-ForHostService([datetime]$Deadline) {
+  $ConsecutiveSuccesses = 0
+  while ([datetime]::UtcNow -lt $Deadline) {
+    if (Test-HttpService) {
+      $ConsecutiveSuccesses += 1
+      if ($ConsecutiveSuccesses -ge 2) { return }
+    } else {
+      $ConsecutiveSuccesses = 0
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  throw ("Windows 宿主机无法读取 WSL 服务 {0}。请检查 DSH 是否完成启动及 WSL localhost 转发设置" -f $Config.url)
 }
 
 function Stop-ManagedChrome {
@@ -233,14 +252,6 @@ function Wait-ForDevTools([datetime]$Deadline) {
     Start-Sleep -Milliseconds 200
   }
   throw 'Windows Chrome 初始化超时'
-}
-
-function Wait-ForHostService([datetime]$Deadline) {
-  while ([datetime]::UtcNow -lt $Deadline) {
-    if (Test-TcpPort) { return }
-    Start-Sleep -Milliseconds 250
-  }
-  throw ("Windows 宿主机无法连接 WSL 服务 {0}:{1}。请检查 DSH 监听地址及 WSL localhost 转发设置" -f $Config.readyHost, $Config.readyPort)
 }
 
 function Wait-ForAppTarget([datetime]$Deadline) {

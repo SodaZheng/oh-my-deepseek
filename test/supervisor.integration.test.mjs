@@ -18,8 +18,8 @@ test("rendered supervisor is valid JavaScript", async () => {
 });
 
 test(
-  "supervisor silently starts and owns the service until the Chrome target closes",
-  { skip: process.platform !== "darwin", timeout: 20_000 },
+  "supervisor waits for a complete DSH boot manifest and owns the service until the Chrome target closes",
+  { skip: process.platform === "win32", timeout: 20_000 },
   async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "oh-my-deepseek-supervisor-"));
     const profilePath = path.join(root, "profile");
@@ -27,15 +27,17 @@ test(
     const chromePath = path.join(root, "fake-chrome");
     const supervisorPath = path.join(root, "supervisor.mjs");
     const stoppedMarker = path.join(root, "service-stopped");
+    const readyMarker = path.join(root, "service-ready");
+    const appOpenedMarker = path.join(root, "app-opened");
     const servicePort = await reservePort();
 
     await writeFile(
       servicePath,
-      `import { writeFileSync } from "node:fs";\nimport net from "node:net";\nconst server = net.createServer();\nserver.listen(${servicePort}, "127.0.0.1");\nprocess.on("SIGTERM", () => server.close(() => { writeFileSync(${JSON.stringify(stoppedMarker)}, "stopped"); process.exit(0); }));\n`,
+      `import { existsSync, writeFileSync } from "node:fs";\nimport http from "node:http";\nconst readyAt = Date.now() + 600;\nconst server = http.createServer((request, response) => { const ready = Date.now() >= readyAt; if (ready && !existsSync(${JSON.stringify(readyMarker)})) writeFileSync(${JSON.stringify(readyMarker)}, String(Date.now())); response.setHeader("content-type", "text/html"); response.end(ready ? '<!doctype html><title>DeepSeek Harness</title><script>window.__DSH_BOOT__={"entries":[{"url":"/plugins/ready/client.js"}]}</script>' : '<!doctype html><title>DeepSeek Harness</title>'); });\nserver.listen(${servicePort}, "127.0.0.1");\nprocess.on("SIGTERM", () => server.close(() => { writeFileSync(${JSON.stringify(stoppedMarker)}, "stopped"); process.exit(0); }));\n`,
     );
     await writeFile(
       chromePath,
-      `#!/usr/bin/env node\nimport { existsSync, mkdirSync, writeFileSync } from "node:fs";\nimport http from "node:http";\nimport path from "node:path";\nconst profileArg = process.argv.find((arg) => arg.startsWith("--user-data-dir="));\nconst profile = profileArg.slice("--user-data-dir=".length);\nmkdirSync(profile, { recursive: true });\nif (existsSync(path.join(profile, "DevToolsActivePort"))) process.exit(0);\nlet open = true;\nconst server = http.createServer((request, response) => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify(request.url === "/json/version" ? { Browser: "Fake Chrome" } : (open ? [{ id: "fake-target", type: "page", url: "http://127.0.0.1:${servicePort}/" }] : []))); });\nserver.listen(0, "127.0.0.1", () => { writeFileSync(path.join(profile, "DevToolsActivePort"), String(server.address().port) + "\\n"); setTimeout(() => { open = false; }, 1200); });\nprocess.on("SIGTERM", () => server.close(() => process.exit(0)));\n`,
+      `#!/usr/bin/env node\nimport { existsSync, mkdirSync, writeFileSync } from "node:fs";\nimport http from "node:http";\nimport path from "node:path";\nconst profileArg = process.argv.find((arg) => arg.startsWith("--user-data-dir="));\nconst profile = profileArg.slice("--user-data-dir=".length);\nmkdirSync(profile, { recursive: true });\nif (existsSync(path.join(profile, "DevToolsActivePort"))) { writeFileSync(${JSON.stringify(appOpenedMarker)}, String(Date.now())); process.exit(0); }\nlet appOpenedAt = null;\nconst server = http.createServer((request, response) => { if (existsSync(${JSON.stringify(appOpenedMarker)})) appOpenedAt ??= Date.now(); const targets = appOpenedAt === null ? [{ id: "prewarm-target", type: "page", url: "data:text/html,Preparing%20Chrome%20Runtime" }] : (Date.now() - appOpenedAt < 1200 ? [{ id: "fake-target", type: "page", url: "http://127.0.0.1:${servicePort}/" }] : []); response.setHeader("content-type", "application/json"); response.end(JSON.stringify(request.url === "/json/version" ? { Browser: "Fake Chrome" } : targets)); });\nserver.listen(0, "127.0.0.1", () => { writeFileSync(path.join(profile, "DevToolsActivePort"), String(server.address().port) + "\\n"); });\nprocess.on("SIGTERM", () => server.close(() => process.exit(0)));\n`,
       { mode: 0o755 },
     );
     await chmod(chromePath, 0o755);
@@ -69,6 +71,7 @@ test(
     ]);
 
     assert.equal(exitCode, 0, await readFile(path.join(root, "supervisor.log"), "utf8"));
+    assert.ok(Number(await readFile(appOpenedMarker, "utf8")) >= Number(await readFile(readyMarker, "utf8")));
     assert.equal(await pathExists(stoppedMarker), true, "owned service did not receive SIGTERM");
     assert.equal(await canConnect(servicePort), false, "owned service port is still listening");
   },
@@ -88,7 +91,7 @@ test("WSL supervisor owns the Linux service while a Windows browser bridge owns 
 
   await writeFile(
     servicePath,
-    `import { writeFileSync } from "node:fs";\nimport net from "node:net";\nconst server = net.createServer();\nserver.listen(${servicePort}, "127.0.0.1");\nprocess.on("SIGTERM", () => server.close(() => { writeFileSync(${JSON.stringify(stoppedMarker)}, "stopped"); process.exit(0); }));\n`,
+    `import { writeFileSync } from "node:fs";\nimport http from "node:http";\nconst server = http.createServer((request, response) => { response.setHeader("content-type", "text/html"); response.end("<!doctype html><title>Ready</title>"); });\nserver.listen(${servicePort}, "127.0.0.1");\nprocess.on("SIGTERM", () => server.close(() => { writeFileSync(${JSON.stringify(stoppedMarker)}, "stopped"); process.exit(0); }));\n`,
   );
   const fakePowerShell = path.join(binDirectory, "powershell.exe");
   await writeFile(

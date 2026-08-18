@@ -24,6 +24,8 @@ test("macOS templates preserve config and escape plist values", () => {
   assert.match(supervisor, /--user-data-dir=/);
   assert.match(supervisor, /DevToolsActivePort/);
   assert.match(supervisor, /stopProcessTree/);
+  assert.match(supervisor, /window\.__DSH_BOOT__/);
+  assert.match(supervisor, /<title>DeepSeek Harness<\/title>/);
 });
 
 test("macOS monitor and LaunchAgent templates stay invisible while supervising cold starts", () => {
@@ -85,6 +87,10 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(launcher, /--exec/);
   assert.match(browserHost, /DevToolsActivePort/);
   assert.match(browserHost, /Get-TargetSnapshot/);
+  assert.match(browserHost, /function Test-HttpService/);
+  assert.match(browserHost, /window\.__DSH_BOOT__/);
+  assert.match(browserHost, /ConsecutiveSuccesses/);
+  assert.doesNotMatch(browserHost, /function Test-TcpPort/);
   assert.match(browserHost, /installed-pwa/);
   assert.match(browserHost, /class OmdChromeWindow/);
   assert.match(browserHost, /Start-PwaWindow/);
