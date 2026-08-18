@@ -15,8 +15,7 @@ $HttpClient.DefaultRequestHeaders.CacheControl = [System.Net.Http.Headers.CacheC
 $HttpClient.DefaultRequestHeaders.CacheControl.NoCache = $true
 $script:BrowserProcess = $null
 
-if ($Config.launchMode -eq 'installed-pwa') {
-  Add-Type -TypeDefinition @'
+Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -35,6 +34,41 @@ public static class OmdChromeWindow {
   [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder path, ref int size);
   [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+  [DllImport("shell32.dll")] private static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore propertyStore);
+  [DllImport("ole32.dll")] private static extern int PropVariantClear(ref PropVariant value);
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct PropertyKey {
+    internal Guid formatId;
+    internal uint propertyId;
+    internal PropertyKey(Guid formatId, uint propertyId) {
+      this.formatId = formatId;
+      this.propertyId = propertyId;
+    }
+  }
+
+  [StructLayout(LayoutKind.Explicit, Size = 16)]
+  private struct PropVariant {
+    [FieldOffset(0)] internal ushort valueType;
+    [FieldOffset(8)] internal IntPtr pointerValue;
+    internal static PropVariant FromString(string value) {
+      return new PropVariant {
+        valueType = 31,
+        pointerValue = Marshal.StringToCoTaskMemUni(value)
+      };
+    }
+  }
+
+  [ComImport]
+  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  [Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")]
+  private interface IPropertyStore {
+    [PreserveSig] int GetCount(out uint propertyCount);
+    [PreserveSig] int GetAt(uint propertyIndex, out PropertyKey key);
+    [PreserveSig] int GetValue(ref PropertyKey key, out PropVariant value);
+    [PreserveSig] int SetValue(ref PropertyKey key, ref PropVariant value);
+    [PreserveSig] int Commit();
+  }
 
   public static long[] GetWindows(string executablePath) {
     var handles = new List<long>();
@@ -73,9 +107,24 @@ public static class OmdChromeWindow {
     var hwnd = new IntPtr(handle);
     return IsWindow(hwnd) && PostMessage(hwnd, 0x0010, IntPtr.Zero, IntPtr.Zero);
   }
+  public static bool SetAppUserModelId(long handle, string appUserModelId) {
+    var hwnd = new IntPtr(handle);
+    if (!IsWindow(hwnd) || string.IsNullOrWhiteSpace(appUserModelId)) return false;
+    var interfaceId = typeof(IPropertyStore).GUID;
+    IPropertyStore store;
+    if (SHGetPropertyStoreForWindow(hwnd, ref interfaceId, out store) < 0 || store == null) return false;
+    var key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+    var value = PropVariant.FromString(appUserModelId);
+    try {
+      if (store.SetValue(ref key, ref value) < 0) return false;
+      return store.Commit() >= 0;
+    } finally {
+      PropVariantClear(ref value);
+      Marshal.FinalReleaseComObject(store);
+    }
+  }
 }
 '@
-}
 
 function Get-DevToolsPort {
   try {
@@ -127,6 +176,28 @@ function Get-PwaWindows {
   return @([OmdChromeWindow]::GetWindows([string]$Config.chromePath))
 }
 
+function Get-ChromeWindowBaseline {
+  $Baseline = @{}
+  foreach ($Handle in Get-PwaWindows) { $Baseline[[string]$Handle] = $true }
+  return $Baseline
+}
+
+function Wait-ForNewChromeWindow([hashtable]$Baseline, [datetime]$Deadline, [string]$ErrorMessage) {
+  while ([datetime]::UtcNow -lt $Deadline) {
+    foreach ($Handle in Get-PwaWindows) {
+      if (-not $Baseline.ContainsKey([string]$Handle)) { return $Handle }
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  throw $ErrorMessage
+}
+
+function Set-TaskbarIdentity([long]$Handle) {
+  if (-not [OmdChromeWindow]::SetAppUserModelId($Handle, [string]$Config.appUserModelId)) {
+    throw '无法把 Windows Chrome App 窗口关联到启动快捷方式'
+  }
+}
+
 function Read-PwaWindowHandle {
   if (-not (Test-Path -LiteralPath $Config.windowHandlePath -PathType Leaf)) { return $null }
   try {
@@ -143,23 +214,16 @@ function Stop-PwaWindow {
 }
 
 function Start-PwaWindow([datetime]$Deadline) {
-  $Baseline = @{}
-  foreach ($Handle in Get-PwaWindows) { $Baseline[[string]$Handle] = $true }
+  $Baseline = Get-ChromeWindowBaseline
   $QuotedArguments = @($Config.pwaArguments | ForEach-Object {
     $Value = [string]$_
     if ($Value -match '[\s"]') { '"' + $Value.Replace('"', '\"') + '"' } else { $Value }
   })
   Start-Process -FilePath $Config.pwaLauncherPath -ArgumentList ($QuotedArguments -join ' ') | Out-Null
-  while ([datetime]::UtcNow -lt $Deadline) {
-    foreach ($Handle in Get-PwaWindows) {
-      if (-not $Baseline.ContainsKey([string]$Handle)) {
-        [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$Handle, [System.Text.Encoding]::ASCII)
-        return $Handle
-      }
-    }
-    Start-Sleep -Milliseconds 100
-  }
-  throw '无法确认已安装的 Windows Chrome App 窗口已打开'
+  $Handle = Wait-ForNewChromeWindow $Baseline $Deadline '无法确认已安装的 Windows Chrome App 窗口已打开'
+  Set-TaskbarIdentity $Handle
+  [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$Handle, [System.Text.Encoding]::ASCII)
+  return $Handle
 }
 
 function Test-HttpService {
@@ -274,10 +338,13 @@ function Run-BrowserLifecycle {
     Remove-Item -LiteralPath $Config.windowHandlePath -Force -ErrorAction SilentlyContinue
     return
   }
+  $WindowBaseline = Get-ChromeWindowBaseline
   Start-HostChrome
   $BrowserDeadline = [datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30))
   Wait-ForDevTools $BrowserDeadline
   $Target = Wait-ForAppTarget ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30)))
+  $WindowHandle = Wait-ForNewChromeWindow $WindowBaseline ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30))) '无法确认 Windows Chrome App 窗口已打开'
+  Set-TaskbarIdentity $WindowHandle
   Invoke-DevTools ('/json/activate/' + [string]$Target.id) | Out-Null
   while ($true) {
     $Snapshot = Get-TargetSnapshot

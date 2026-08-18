@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
-import { createWslLauncher, findInstalledWindowsWebApp, parseSimpleServiceCommand } from "../src/platform/wsl.mjs";
+import { createWslLauncher, findInstalledWindowsWebApp, parseSimpleServiceCommand, resolveDirectWslService, warmDirectServiceCompileCache } from "../src/platform/wsl.mjs";
 import { pathExists } from "../src/utils.mjs";
 
 test("creates a Windows shortcut payload while keeping the supervisor in WSL", async () => {
@@ -13,6 +13,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   const home = path.join(root, "home");
   const project = path.join(home, "project");
   const icon = path.join(root, "icon.ico");
+  const chromeExecutable = String.raw`C:\Program Files\Google\Chrome\Application\chrome.exe`;
+  const installedAppId = "b".repeat(32);
   await mkdir(project, { recursive: true });
   await writeFile(icon, "icon");
 
@@ -24,6 +26,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
       env: { WSL_DISTRO_NAME: "Ubuntu-Test", USER: "tester", SHELL: "/bin/bash" },
     },
   );
+  const appUserModelId = `OpenAI.OhMyDeepSeek.${config.instanceId}`;
   config.homeDirectory = home;
   const toLocalPath = (windowsPath) => {
     assert.match(windowsPath, /^[A-Z]:\\/i);
@@ -55,13 +58,20 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
       };
     },
   };
+  const profileRoot = toLocalPath(String.raw`C:\Users\tester\AppData\Local\Google\Chrome\User Data\Default`);
+  await mkdir(path.join(profileRoot, "Web Applications", "Manifest Resources", installedAppId), { recursive: true });
+  await mkdir(path.join(profileRoot, "Sync Data", "LevelDB"), { recursive: true });
+  await writeFile(path.join(profileRoot, "Sync Data", "LevelDB", "000001.log"), `prefix-${installedAppId}-${config.url}-suffix`);
+  const proxyPath = path.win32.join(path.win32.dirname(chromeExecutable), "chrome_proxy.exe");
+  await mkdir(path.dirname(toLocalPath(proxyPath)), { recursive: true });
+  await writeFile(toLocalPath(proxyPath), "proxy");
   const legacyWarmStartShortcut = toLocalPath(String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\WSL Harness (WSL Warm Start).lnk`);
   await mkdir(path.dirname(legacyWarmStartShortcut), { recursive: true });
   await writeFile(legacyWarmStartShortcut, "legacy warm start");
 
   const result = await createWslLauncher(
     config,
-    { executable: String.raw`C:\Program Files\Google\Chrome\Application\chrome.exe`, icon },
+    { executable: chromeExecutable, icon },
     interop,
   );
   const hostSupport = toLocalPath(result.hostSupportDirectory);
@@ -80,6 +90,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.doesNotMatch(hiddenLauncher, /powershell\.exe/i);
   const shortcutOptions = JSON.parse(await readFile(shortcut, "utf8"));
   assert.match(shortcutOptions.launcherPath, /launcher\.js$/i);
+  assert.equal(shortcutOptions.appUserModelId, appUserModelId);
   const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
   assert.equal(storedConfig.platform, "wsl");
   assert.equal(storedConfig.launchMode, "windows-host-browser");
@@ -96,8 +107,10 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(launchConfig.user, "tester");
   assert.match(launchConfig.wslPath, /wsl\.exe$/i);
   const browserConfig = JSON.parse(await readFile(path.join(hostSupport, "browser-config.json"), "utf8"));
-  assert.equal(browserConfig.launchMode, "url-app");
+  assert.equal(browserConfig.launchMode, "installed-pwa");
+  assert.equal(browserConfig.appUserModelId, appUserModelId);
   assert.equal(result.serviceLaunchMode, "direct");
+  assert.equal(result.taskbarIdentityMatched, true);
   assert.equal(await pathExists(legacyWarmStartShortcut), false);
 });
 
@@ -111,6 +124,26 @@ test("parses only service commands that are safe to execute without a shell", ()
   assert.equal(parseSimpleServiceCommand("dsh $(prepare)"), null);
   assert.equal(parseSimpleServiceCommand("dsh web\necho done"), null);
   assert.equal(parseSimpleServiceCommand("dsh 'unterminated"), null);
+});
+
+test("prepares the default DSH compile cache during create without keeping a process alive", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "oh-my-deepseek-wsl-cache-"));
+  const fakeDsh = path.join(root, "dsh");
+  const marker = path.join(root, "warmup.txt");
+  const cachePath = path.join(root, "compile-cache");
+  await writeFile(fakeDsh, `#!/bin/sh\nprintf '%s\\n' "$NODE_COMPILE_CACHE" "$@" > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+  await chmod(fakeDsh, 0o755);
+  const config = {
+    serviceCommand: `'${fakeDsh}' web`,
+    serviceShell: "/bin/bash",
+    servicePath: process.env.PATH,
+    workingDirectory: root,
+  };
+  const directService = await resolveDirectWslService(config);
+  directService.nodeCompileCachePath = cachePath;
+  assert.deepEqual(directService.warmupArguments, ["web", "--help"]);
+  assert.equal(warmDirectServiceCompileCache(directService, config), true);
+  assert.deepEqual((await readFile(marker, "utf8")).trim().split("\n"), [cachePath, "web", "--help"]);
 });
 
 test("detects a Windows Chrome installed PWA for the configured WSL URL", async () => {

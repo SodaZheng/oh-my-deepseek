@@ -42,13 +42,29 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
 
   const browserHostPath = path.join(root, "browser-host.ps1");
   await writeFile(browserHostPath, renderWindowsHostBrowser());
-  const paths = [browserHostPath].map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
+  const shortcutScriptPath = path.join(result.supportDirectory, "create-shortcut.ps1");
+  const paths = [browserHostPath, shortcutScriptPath].map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
   const parseCommand = `$Files = @(${paths}); foreach ($File in $Files) { $Tokens = $null; $Errors = $null; [System.Management.Automation.Language.Parser]::ParseFile($File, [ref]$Tokens, [ref]$Errors) | Out-Null; if ($Errors.Count -gt 0) { $Errors | ForEach-Object { Write-Error $_ }; exit 1 } }`;
   const parseResult = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-Command", parseCommand], {
     encoding: "utf8",
     windowsHide: true,
   });
   assert.equal(parseResult.status, 0, parseResult.stderr || parseResult.stdout);
+  const browserConfigPath = path.join(root, "browser-config.json");
+  await writeFile(browserConfigPath, JSON.stringify({
+    launchMode: "url-app",
+    chromePath: fakeChrome,
+    chromeProfilePath: path.join(root, "profile"),
+    browserPidPath: path.join(root, "browser.pid"),
+    lastErrorPath: path.join(root, "browser-error.txt"),
+    appUserModelId: "OpenAI.OhMyDeepSeek.TestHarness",
+  }));
+  const browserHostCompileResult = spawnSync(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", browserHostPath, "-ConfigPath", browserConfigPath, "-Mode", "Stop"],
+    { encoding: "utf8", windowsHide: true },
+  );
+  assert.equal(browserHostCompileResult.status, 0, browserHostCompileResult.stderr || browserHostCompileResult.stdout);
 
   const escapedShortcutPath = result.shortcutPath.replaceAll("'", "''");
   const shortcutCommand = `$Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut('${escapedShortcutPath}'); [Console]::WriteLine($Shortcut.TargetPath); [Console]::WriteLine($Shortcut.Arguments)`;
@@ -59,6 +75,31 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(shortcutResult.status, 0, shortcutResult.stderr || shortcutResult.stdout);
   assert.match(shortcutResult.stdout, /wscript\.exe/i);
   assert.match(shortcutResult.stdout, /launcher\.js/i);
+
+  const appUserModelId = "OpenAI.OhMyDeepSeek.TestHarness";
+  const identityResult = spawnSync(
+    "powershell.exe",
+    [
+      "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", shortcutScriptPath,
+      "-ShortcutPath", result.shortcutPath,
+      "-LauncherPath", path.join(result.supportDirectory, "launcher.js"),
+      "-WorkingDirectory", result.supportDirectory,
+      "-IconPath", fakeChrome,
+      "-Description", "Taskbar identity test",
+      "-AppUserModelId", appUserModelId,
+    ],
+    { encoding: "utf8", windowsHide: true },
+  );
+  assert.equal(identityResult.status, 0, identityResult.stderr || identityResult.stdout);
+  const shortcutFolder = path.dirname(result.shortcutPath).replaceAll("'", "''");
+  const shortcutName = path.basename(result.shortcutPath).replaceAll("'", "''");
+  const propertyCommand = `$Folder = (New-Object -ComObject Shell.Application).Namespace('${shortcutFolder}'); $Item = $Folder.ParseName('${shortcutName}'); [Console]::Write([string]$Item.ExtendedProperty('System.AppUserModel.ID'))`;
+  const propertyResult = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-Command", propertyCommand], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  assert.equal(propertyResult.status, 0, propertyResult.stderr || propertyResult.stdout);
+  assert.equal(propertyResult.stdout.trim(), appUserModelId);
 
   const argumentProbePath = path.join(root, "argument probe.mjs");
   const argumentOutputPath = path.join(root, "argument probe.json");

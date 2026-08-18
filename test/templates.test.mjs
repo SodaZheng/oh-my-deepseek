@@ -71,6 +71,9 @@ test("Windows templates run a hidden lifecycle supervisor", () => {
   assert.match(shortcut, /wscript\.exe/);
   assert.doesNotMatch(shortcut, /TargetPath = \(Get-Command powershell\.exe\)/);
   assert.match(shortcut, /CreateShortcut/);
+  assert.match(shortcut, /AppUserModelId/);
+  assert.match(shortcut, /9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3/);
+  assert.match(shortcut, /ShortcutAppIdentity/);
 });
 
 test("WSL templates keep service ownership in Linux and browser ownership in Windows", () => {
@@ -95,6 +98,10 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /class OmdChromeWindow/);
   assert.match(browserHost, /Start-PwaWindow/);
   assert.match(browserHost, /GetWindows\(string executablePath\)/);
+  assert.match(browserHost, /SHGetPropertyStoreForWindow/);
+  assert.match(browserHost, /SetAppUserModelId/);
+  assert.match(browserHost, /function Set-TaskbarIdentity/);
+  assert.match(browserHost, /Set-TaskbarIdentity \$WindowHandle/);
   assert.match(browserHost, /PostMessage\(hwnd, 0x0010/);
   assert.match(browserHost, /taskkill\.exe/);
   assert.match(browserHost, /\('--app=' \+ \[string\]\$Config\.url\)/);

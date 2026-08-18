@@ -29,6 +29,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     ? { ...resolvedDirectService, nodeCompileCachePath: path.join(stateDirectory, "node-compile-cache") }
     : null;
   const installedWebApp = await findInstalledWindowsWebApp({ config, chrome, windowsEnvironment, interop });
+  const appUserModelId = `OpenAI.OhMyDeepSeek.${config.instanceId}`;
   const chromeProfilePath = path.win32.join(windowsEnvironment.localAppData, "Oh My DeepSeek", "profiles", appKey);
   const chromeProfilePathWsl = interop.toWslPath(chromeProfilePath);
   const shortcutDirectory = config.output ? interop.toWindowsPath(config.output) : windowsEnvironment.desktop;
@@ -52,6 +53,9 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     usesInstalledPwa: Boolean(installedWebApp),
     chromeAppId: installedWebApp?.appId ?? null,
     chromeProfileDirectory: installedWebApp?.profileDirectory ?? null,
+    appUserModelId,
+    taskbarIdentityMatched: true,
+    compileCachePrepared: false,
     serviceLaunchMode: directService ? "direct" : "login-shell",
     wslDistro: config.wslDistro,
     url: config.url,
@@ -68,6 +72,10 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   await ensureDirectory(supportRoot);
   await ensureDirectory(hostSupportRootWsl);
   await ensureDirectory(path.dirname(shortcutPathWsl));
+  if (directService?.warmupArguments) {
+    await ensureDirectory(directService.nodeCompileCachePath);
+    result.compileCachePrepared = warmDirectServiceCompileCache(directService, config);
+  }
   const stagingDirectory = await mkdtemp(path.join(supportRoot, ".oh-my-deepseek-"));
   const hostStagingDirectory = await mkdtemp(path.join(hostSupportRootWsl, ".oh-my-deepseek-"));
   let installedIconPath = chrome.executable;
@@ -113,6 +121,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       launchMode: installedWebApp ? "installed-pwa" : "url-app",
       pwaLauncherPath: installedWebApp?.launcherPath ?? null,
       pwaArguments: installedWebApp?.arguments ?? [],
+      appUserModelId,
       windowHandlePath: path.win32.join(hostSupportDirectory, "app-window.txt"),
       browserPidPath: path.win32.join(hostSupportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,
@@ -167,6 +176,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     supportDirectory: hostSupportDirectory,
     iconPath: installedIconPath,
     description: `${config.name} — 在 WSL 启动服务，再以 Windows Chrome App 模式打开`,
+    appUserModelId,
     scriptPath: path.win32.join(hostSupportDirectory, "create-shortcut.ps1"),
   });
   if (legacyStartupShortcutPathWsl && await pathExists(legacyStartupShortcutPathWsl)) {
@@ -217,6 +227,7 @@ $Value = @{
         "-WorkingDirectory", options.supportDirectory,
         "-IconPath", options.iconPath,
         "-Description", options.description,
+        "-AppUserModelId", options.appUserModelId || "",
       ],
       { encoding: "utf8", windowsHide: true },
     );
@@ -326,7 +337,24 @@ export async function resolveDirectWslService(config) {
     executable,
     arguments: arguments_,
     path: config.servicePath,
+    warmupArguments: path.basename(command).toLowerCase() === "dsh" && arguments_[0] === "web"
+      ? ["web", "--help"]
+      : null,
   };
+}
+
+export function warmDirectServiceCompileCache(directService, config) {
+  const result = spawnSync(directService.executable, directService.warmupArguments, {
+    cwd: config.workingDirectory,
+    env: {
+      ...process.env,
+      ...(directService.path ? { PATH: directService.path } : {}),
+      NODE_COMPILE_CACHE: directService.nodeCompileCachePath,
+    },
+    stdio: "ignore",
+    timeout: 30_000,
+  });
+  return !result.error && result.status === 0;
 }
 
 export function parseSimpleServiceCommand(command) {
