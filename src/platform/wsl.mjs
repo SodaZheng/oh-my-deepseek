@@ -37,13 +37,15 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   if (installedWebApp && !officialPwaIdentity) {
     throw new Error("检测到 Chrome PWA，但找不到其官方 Windows 快捷方式或 AppUserModelID。请在 Chrome 中重新安装该页面为应用并保留开始菜单快捷方式后再运行 create");
   }
-  const appUserModelId = officialPwaIdentity?.appUserModelId ?? `OpenAI.OhMyDeepSeek.${config.instanceId}`;
+  const appUserModelId = `OpenAI.OhMyDeepSeek.${config.instanceId}`;
+  const officialPwaAppUserModelId = officialPwaIdentity?.appUserModelId ?? null;
   const usesOfficialPwaEntry = Boolean(officialPwaIdentity);
   const chromeProfilePath = path.win32.join(windowsEnvironment.localAppData, "Oh My DeepSeek", "profiles", appKey);
   const chromeProfilePathWsl = interop.toWslPath(chromeProfilePath);
   const shortcutDirectory = config.output ? interop.toWindowsPath(config.output) : windowsEnvironment.desktop;
   const shortcutPath = path.win32.join(shortcutDirectory, `${config.name}.lnk`);
   const shortcutPathWsl = interop.toWslPath(shortcutPath);
+  const startMenuShortcutPath = path.win32.join(windowsEnvironment.programs, "Oh My DeepSeek", `${config.name}.lnk`);
   const monitorStartupShortcutPath = path.win32.join(windowsEnvironment.startup, `${config.name} Monitor.lnk`);
   const monitorStartupShortcutPathWsl = interop.toWslPath(monitorStartupShortcutPath);
   const lockPath = path.join(stateDirectory, "supervisor.lock");
@@ -65,6 +67,8 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     chromeAppId: installedWebApp?.appId ?? null,
     chromeProfileDirectory: installedWebApp?.profileDirectory ?? null,
     appUserModelId,
+    officialPwaAppUserModelId,
+    startMenuShortcutPath,
     taskbarIdentityMatched: true,
     usesOfficialPwaEntry,
     compileCachePrepared: false,
@@ -137,7 +141,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       pwaLauncherPath: installedWebApp?.launcherPath ?? null,
       pwaArguments: installedWebApp?.arguments ?? [],
       appUserModelId,
-      preservePwaIdentity: usesOfficialPwaEntry,
+      sourceAppUserModelId: officialPwaAppUserModelId,
       taskbarIconResource: `${installedIconPath},0`,
       windowBoundsPath: path.win32.join(hostStateDirectory, "window-size.json"),
       windowHandlePath: path.win32.join(hostSupportDirectory, "app-window.txt"),
@@ -186,7 +190,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       const monitorSourceWsl = path.join(hostStagingDirectory, "pwa-monitor.cs");
       const monitorExecutableWsl = path.join(hostStagingDirectory, "pwa-monitor.exe");
       await writeText(monitorSourceWsl, renderWindowsPwaMonitorSource({
-        appUserModelId,
+        appUserModelId: officialPwaAppUserModelId,
         launcherPath: path.win32.join(hostSupportDirectory, "launcher.exe"),
         windowHandlePath: path.win32.join(hostSupportDirectory, "app-window.txt"),
         monitorId: config.instanceId,
@@ -212,8 +216,19 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     if (await pathExists(hostStagingDirectory)) await removeExactTarget(hostStagingDirectory);
   }
 
+  const launcherPath = path.win32.join(hostSupportDirectory, "launcher.exe");
+  const shortcutOptions = {
+    launcherPath,
+    supportDirectory: hostSupportDirectory,
+    iconPath: installedIconPath,
+    description: `${config.name} — 在 WSL 启动服务，再以 Windows Chrome App 模式打开`,
+    appUserModelId,
+    scriptPath: path.win32.join(hostSupportDirectory, "create-shortcut.ps1"),
+  };
+  interop.createShortcut({ ...shortcutOptions, shortcutPath });
+  interop.createShortcut({ ...shortcutOptions, shortcutPath: startMenuShortcutPath });
+
   if (usesOfficialPwaEntry) {
-    interop.copyShortcut({ sourcePath: officialPwaIdentity.shortcutPath, shortcutPath, iconPath: installedIconPath });
     interop.createStartupMonitor({
       monitorPath: path.win32.join(hostSupportDirectory, "pwa-monitor.exe"),
       shortcutPath: monitorStartupShortcutPath,
@@ -223,15 +238,6 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     });
   } else {
     if (await pathExists(monitorStartupShortcutPathWsl)) await removeExactTarget(monitorStartupShortcutPathWsl);
-    interop.createShortcut({
-      shortcutPath,
-      launcherPath: path.win32.join(hostSupportDirectory, "launcher.exe"),
-      supportDirectory: hostSupportDirectory,
-      iconPath: installedIconPath,
-      description: `${config.name} — 在 WSL 启动服务，再以 Windows Chrome App 模式打开`,
-      appUserModelId,
-      scriptPath: path.win32.join(hostSupportDirectory, "create-shortcut.ps1"),
-    });
   }
   if (legacyStartupShortcutPathWsl && await pathExists(legacyStartupShortcutPathWsl)) {
     await removeExactTarget(legacyStartupShortcutPathWsl);
@@ -260,7 +266,9 @@ $Value = @{
     }
     try {
       const value = JSON.parse(result.stdout.trim());
-      if (!value.localAppData || !value.desktop || !value.powerShell || !value.wsl) throw new Error("目录、PowerShell 或 WSL 路径为空");
+      if (!value.localAppData || !value.desktop || !value.startup || !value.programs || !value.powerShell || !value.wsl) {
+        throw new Error("目录、PowerShell 或 WSL 路径为空");
+      }
       return value;
     } catch (error) {
       throw new Error(`无法解析 Windows 用户目录：${error.message}`);
@@ -288,7 +296,7 @@ $Value = @{
       { encoding: "utf8", windowsHide: true },
     );
     if (result.error || result.status !== 0) {
-      throw new Error(`无法创建 Windows 桌面快捷方式：${formatCommandError(result)}`);
+      throw new Error(`无法创建 Windows 启动快捷方式：${formatCommandError(result)}`);
     }
   },
   compileNativeLauncher({ sourcePath, outputPath }) {
@@ -300,19 +308,6 @@ $Value = @{
   },
   findPwaShortcutIdentity(options) {
     return findPwaShortcutIdentity(options);
-  },
-  copyShortcut({ sourcePath, shortcutPath, iconPath }) {
-    const shouldCopy = path.win32.resolve(sourcePath).toLowerCase() !== path.win32.resolve(shortcutPath).toLowerCase();
-    const copyCommand = shouldCopy
-      ? `Copy-Item -LiteralPath ${powershellSingleQuote(sourcePath)} -Destination ${powershellSingleQuote(shortcutPath)} -Force\n`
-      : "";
-    const script = `$ErrorActionPreference = 'Stop'
-${copyCommand}$Shell = New-Object -ComObject WScript.Shell
-$Shortcut = $Shell.CreateShortcut(${powershellSingleQuote(shortcutPath)})
-$Shortcut.IconLocation = ${powershellSingleQuote(`${iconPath},0`)}
-$Shortcut.Save()`;
-    const result = runPowerShell(script);
-    if (result.error || result.status !== 0) throw new Error(`无法更新 Chrome PWA 快捷方式：${formatCommandError(result)}`);
   },
   createStartupMonitor({ monitorPath, shortcutPath, scriptPath, supportDirectory, iconPath }) {
     this.createShortcut({

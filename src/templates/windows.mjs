@@ -285,6 +285,10 @@ $Shortcut.Arguments = '//B //NoLogo "' + $EscapedLauncher + '"'`;
 )
 
 $Shell = New-Object -ComObject WScript.Shell
+$ShortcutDirectory = Split-Path -Parent $ShortcutPath
+if (-not (Test-Path -LiteralPath $ShortcutDirectory -PathType Container)) {
+  New-Item -ItemType Directory -Path $ShortcutDirectory -Force | Out-Null
+}
 Remove-Item -LiteralPath $ShortcutPath -Force -ErrorAction SilentlyContinue
 $Shortcut = $Shell.CreateShortcut($ShortcutPath)
 ${launchProperties}

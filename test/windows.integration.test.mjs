@@ -31,25 +31,39 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.ps1")), false);
   assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.js")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "supervisor.mjs")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "window-state.ps1")), true);
   const hiddenLauncher = await readFile(path.join(result.supportDirectory, "launcher.js"), "utf8");
   assert.notEqual(hiddenLauncher.charCodeAt(0), 0xfeff);
   assert.equal(/[^\x00-\x7f]/.test(hiddenLauncher), false);
   assert.doesNotMatch(hiddenLauncher, /powershell\.exe/i);
-  assert.match(
-    await readFile(path.join(result.supportDirectory, "config.json"), "utf8"),
-    /"generatedBy": "oh-my-deepseek"/,
-  );
+  const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
+  assert.equal(storedConfig.generatedBy, "oh-my-deepseek");
+  assert.equal(storedConfig.windowStateScriptPath, path.join(result.supportDirectory, "window-state.ps1"));
+  assert.match(storedConfig.windowBoundsPath, /window-size\.json$/);
 
   const browserHostPath = path.join(root, "browser-host.ps1");
   await writeFile(browserHostPath, renderWindowsHostBrowser());
   const shortcutScriptPath = path.join(result.supportDirectory, "create-shortcut.ps1");
-  const paths = [browserHostPath, shortcutScriptPath].map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
+  const windowStateScriptPath = path.join(result.supportDirectory, "window-state.ps1");
+  const paths = [browserHostPath, shortcutScriptPath, windowStateScriptPath].map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
   const parseCommand = `$Files = @(${paths}); foreach ($File in $Files) { $Tokens = $null; $Errors = $null; [System.Management.Automation.Language.Parser]::ParseFile($File, [ref]$Tokens, [ref]$Errors) | Out-Null; if ($Errors.Count -gt 0) { $Errors | ForEach-Object { Write-Error $_ }; exit 1 } }`;
   const parseResult = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-Command", parseCommand], {
     encoding: "utf8",
     windowsHide: true,
   });
   assert.equal(parseResult.status, 0, parseResult.stderr || parseResult.stdout);
+  const windowStateCompileResult = spawnSync(
+    "powershell.exe",
+    [
+      "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windowStateScriptPath,
+      "-ChromeProcessId", "1",
+      "-BoundsPath", path.join(root, "window-size.json"),
+      "-ReadyPath", path.join(root, "window-state.ready"),
+      "-CompileOnly",
+    ],
+    { encoding: "utf8", windowsHide: true },
+  );
+  assert.equal(windowStateCompileResult.status, 0, windowStateCompileResult.stderr || windowStateCompileResult.stdout);
   const browserConfigPath = path.join(root, "browser-config.json");
   await writeFile(browserConfigPath, JSON.stringify({
     launchMode: "url-app",

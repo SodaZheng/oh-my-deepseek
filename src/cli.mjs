@@ -73,6 +73,7 @@ function printCreateResult(result, asJson) {
     else process.stdout.write("提示：未检测到该 URL 的已安装 Chrome Web App，将使用直接 Chrome 模式，Dock 显示 Chrome 图标。\n");
   } else if (result.platform === "wsl") {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
+    process.stdout.write(`${prefix} Windows 开始菜单入口：${result.startMenuShortcutPath}\n`);
     process.stdout.write(`WSL 发行版：${result.wslDistro}\n`);
     if (result.usesInstalledPwa) {
       process.stdout.write(`Windows Chrome App：已安装 PWA ${result.chromeAppId}（${result.chromeProfileDirectory}）\n`);
@@ -84,7 +85,7 @@ function printCreateResult(result, asJson) {
     process.stdout.write(`WSL 监督器目录：${result.supportDirectory}\n`);
     process.stdout.write(`Windows 桥接器目录：${result.hostSupportDirectory}\n`);
     process.stdout.write(result.usesOfficialPwaEntry
-      ? `Windows 启动入口：Chrome 官方 PWA 快捷方式 + 原生事件监视器\n`
+      ? `Windows 启动入口：自有快捷方式/任务栏身份 + Chrome 官方 PWA/Profile\n`
       : `Windows 启动入口：原生无控制台 launcher.exe（无 WScript）\n`);
     process.stdout.write(`WSL 服务启动：${result.serviceLaunchMode === "direct" ? "直接执行（无常驻）" : "登录 shell 兼容模式"}\n`);
   } else {

@@ -38,7 +38,7 @@ oh-my-deepseek create
 
 macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.app`，并在桌面创建快捷入口。它就是唯一的可见 App，可直接从 `~/Applications` 拖入 Dock。Windows 会把启动文件放在 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，并在桌面创建 `.lnk`。快捷方式通过无控制台的 Windows Script Host 启动 Node 监督器后立即退出，不再让 WScript 或 PowerShell 在整个 App 生命周期中保持运行；`launcher.js` 使用无 BOM 的纯 ASCII 内容，Unicode 路径和提示以 `\uXXXX` 表示，兼容经典 JScript 引擎。旧快捷方式需要重新运行一次 `oh-my-deepseek create` 才能更新。
 
-在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式。检测到 Chrome 已安装 PWA 时，桌面入口会直接复制 Chrome 官方 PWA 快捷方式，因此任务栏入口和最终窗口本来就是同一个 Chrome App。一个创建时编译的无控制台原生监视器通过 Windows 窗口事件捕获首次 PWA 窗口：服务未接管时立即关闭该窗口，启动 `wsl.exe` 监督器，等 DSH 完整就绪后再由同一个官方 PWA 打开。它不轮询、不预热 WSL、不运行 DSH，空闲时只等待窗口事件。
+在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式。检测到 Chrome 已安装 PWA 时，工具仍用官方 `chrome_proxy.exe`、App ID 和原有 Chrome Profile 打开真实 PWA，因此登录、Cookie 和窗口能力不变；但桌面入口与开始菜单入口改用 Oh My DeepSeek 自己的无控制台 `launcher.exe`、专属 AppUserModelID 和 `app.ico`。最终 PWA 窗口会切换到同一个专属 ID，确保 Windows 固定任务栏时只从本工具的开始菜单快捷方式取启动命令和图标。一个创建时编译的无控制台原生监视器仍会通过 Windows 窗口事件接管用户直接点击 Chrome 官方 PWA 入口的冷启动：服务未接管时立即关闭该窗口，启动 `wsl.exe` 监督器，等 DSH 完整就绪后再由同一个官方 PWA 打开。托管重开前会写入短暂标记，避免监视器再次拦截。它不轮询、不预热 WSL、不运行 DSH，空闲时只等待窗口事件。
 
 如果找不到 Chrome 官方 PWA 快捷方式，才回退到原生 `launcher.exe` 入口。两条路径都不再经过 Windows Script Host。生成入口时工具会提前解析 `dsh` 等简单服务命令的绝对可执行路径和参数；点击时监督器直接执行该入口，跳过交互式登录 shell、启动脚本和重复的命令发现。宿主机无需重复安装 Node.js 或 DSH，也不会安装常驻预热进程。
 
@@ -66,13 +66,13 @@ WSL 模式保留与原生桌面入口一致的行为：静默启动、自定义�
 
 `dsh web`、`npm run dev` 以及只包含普通参数和引号的命令会使用直接执行快路径，并在应用状态目录复用 Node 磁盘编译缓存，减少后续冷启动重复解析模块的开销。对于默认的 `dsh web`，`create` 阶段会通过一次无服务端口的帮助命令提前填充编译缓存，把模块编译从第一次桌面点击移到入口生成时完成。包含管道、重定向、变量展开、命令替换、通配符或环境变量赋值的复杂命令会自动回退到原有登录 shell 兼容路径，避免改变命令语义。两种模式都只在点击后启动，空闲时不占用 WSL/DSH 的 CPU 或内存；快路径只保留少量磁盘缓存。
 
-WSL 创建入口时会扫描 Windows Chrome 的 `Default` 和 `Profile N`，按页面 URL 识别已经安装的 PWA。检测成功后使用 Chrome 官方 `chrome_proxy.exe --app-id=<ID> --profile-directory=<Profile>` 启动，因此复用 Windows Chrome 的登录状态、PWA 菜单、图标和窗口体验；不会再为主路径创建独立调试 Profile，也不需要 DevTools 端口。桥接器通过本次新增的 Windows 顶层窗口句柄完成激活和关闭检测。
+WSL 创建入口时会扫描 Windows Chrome 的 `Default` 和 `Profile N`，按页面 URL 识别已经安装的 PWA。检测成功后使用 Chrome 官方 `chrome_proxy.exe --app-id=<ID> --profile-directory=<Profile>` 启动，因此复用 Windows Chrome 的登录状态、PWA 菜单和窗口能力；任务栏图标则来自本工具生成的 `app.ico`。主路径不会创建独立调试 Profile，也不需要 DevTools 端口。桥接器通过 Windows 顶层窗口句柄完成身份切换、激活和关闭检测。
 
-官方 PWA 路径保留 Chrome 自己的 `System.AppUserModel.ID`，不再修改窗口身份；监视器用该 ID 精确识别目标窗口并避免影响其他 Chrome 窗口。只有无官方 PWA 快捷方式的回退路径才使用本工具生成的专属 App ID。
+监视器只用 Chrome 官方 `System.AppUserModel.ID` 识别首次冷启动窗口，避免影响其他 Chrome 窗口；托管后的真实 PWA 窗口会改用本工具的专属 App ID，并与桌面、开始菜单快捷方式保持一致。Chrome 的 Profile、App ID 和启动参数不变，任务栏身份与浏览器身份彼此解耦。
 
 第一次使用前，需要在 Windows 的普通 Chrome 窗口中安装一次页面：先在 WSL 手动运行服务，在 Windows Chrome 打开对应 URL，选择“安装此网站为应用”或“将网页安装为应用”，然后重新运行 `oh-my-deepseek create`。如果没有检测到已安装 PWA，工具会明确提示并回退到 `--app=<URL>` 兼容模式。
 
-更新已有入口后，如果任务栏仍保留以前固定的两个图标，先取消固定旧图标，再从新运行的 App 图标重新固定一次；旧的 Windows 任务栏固定项不会随桌面 `.lnk` 自动改写。
+更新已有入口后，先取消固定旧的 Chrome PWA 图标，再运行一次新生成的桌面或开始菜单入口，并从这个正在运行的 App 图标重新固定。旧固定项仍绑定 `Chrome._crx_...`，不会自动迁移到新的专属 AppUserModelID；这次需要手动取消一次，之后重新运行 `create` 不再需要反复固定。
 
 Windows 宿主浏览器桥接器只在 App 窗口运行期间存在。PWA 模式使用窗口句柄状态；URL 回退模式复用单个 HTTP 客户端与 Chrome 进程对象。空闲状态不安装常驻 Windows 服务、WSL 守护进程或预热任务。
 
@@ -130,7 +130,7 @@ oh-my-deepseek create `
 7. 启动失败时弹出提示，详细输出保存在日志文件中。
 8. 重复点击时激活现有窗口，不创建第二个实例。
 
-WSL 的 PWA 链路为：Chrome 官方快捷方式 → 原生事件监视器 → 无控制台 `launcher.exe` → 指定发行版的 `wsl.exe --exec` → Node 监督器 → 完整就绪后重开同一个 Chrome PWA。运行时不再启动 WScript 或交互式登录 shell；复杂命令则保留原兼容链路。
+WSL 的常规 PWA 链路为：自有桌面/开始菜单快捷方式 → 无控制台 `launcher.exe` → 指定发行版的 `wsl.exe --exec` → Node 监督器 → 完整就绪后打开原 Chrome PWA → 窗口切换到自有任务栏身份。若用户直接点击 Chrome 官方快捷方式，则先由原生事件监视器接管，再进入同一链路。运行时不再启动 WScript 或交互式登录 shell；复杂命令则保留原兼容链路。
 
 如果端口在点击入口前已经可用，关闭 Chrome App **不会**停止原有服务，避免误杀用户手动启动或由其他工具管理的进程。
 

@@ -5,6 +5,7 @@ import { renderMacInfoPlist, renderMacLaunchAgent, renderMacLauncher, renderMacM
 import { renderMacNativeMonitorSource } from "../src/templates/macos-native-monitor.mjs";
 import { renderSupervisor } from "../src/templates/supervisor.mjs";
 import { renderWindowsHiddenLauncher, renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource, renderWindowsShortcutScript } from "../src/templates/windows.mjs";
+import { renderWindowsWindowState } from "../src/templates/windows-window-state.mjs";
 import { renderWindowsHostBrowser } from "../src/templates/wsl.mjs";
 
 const macConfig = normalizeCreateOptions(
@@ -56,6 +57,7 @@ test("Windows templates run a hidden lifecycle supervisor", () => {
     missingMessage: "Node 已移动",
   });
   const supervisor = renderSupervisor();
+  const windowState = renderWindowsWindowState();
   const shortcut = renderWindowsShortcutScript();
   assert.match(hiddenLauncher, /WScript\.Shell/);
   assert.match(hiddenLauncher, /shell\.Run\(command, 0, false\)/);
@@ -70,9 +72,17 @@ test("Windows templates run a hidden lifecycle supervisor", () => {
   assert.match(supervisor, /taskkill\.exe/);
   assert.match(supervisor, /if \(config\.platform === "win32"\)/);
   assert.match(supervisor, /chromeChild = startChrome\(true\);\s+await waitForChromeDevTools\(\);/);
+  assert.match(supervisor, /windowStateChild = await startWindowsWindowState\(\)/);
+  assert.match(supervisor, /config\.windowStateScriptPath/);
+  assert.match(windowState, /GetWindowPlacement/);
+  assert.match(windowState, /MonitorFromWindow/);
+  assert.match(windowState, /SetWindowPos/);
+  assert.match(windowState, /FindWindow\(int expectedProcessId\)/);
+  assert.match(windowState, /Save-WindowSize \$Handle/);
   assert.match(shortcut, /wscript\.exe/);
   assert.doesNotMatch(shortcut, /TargetPath = \(Get-Command powershell\.exe\)/);
   assert.match(shortcut, /CreateShortcut/);
+  assert.match(shortcut, /New-Item -ItemType Directory/);
   assert.match(shortcut, /AppUserModelId/);
   assert.match(shortcut, /9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3/);
   assert.match(shortcut, /ShortcutAppIdentity/);
@@ -124,7 +134,9 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /SetTaskbarProperties/);
   assert.match(browserHost, /iconKey = new PropertyKey\(formatId, 3\)/);
   assert.match(browserHost, /taskbarIconResource/);
+  assert.match(browserHost, /sourceAppUserModelId/);
   assert.match(browserHost, /GetAppUserModelId/);
+  assert.match(browserHost, /GetTaskbarIconResource/);
   assert.match(browserHost, /GetWindowPlacement/);
   assert.match(browserHost, /MonitorFromWindow/);
   assert.match(browserHost, /SetWindowPos/);
@@ -135,6 +147,8 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /function Set-TaskbarIdentity/);
   assert.match(browserHost, /Set-TaskbarIdentity \$WindowHandle/);
   assert.match(browserHost, /ActualAppUserModelId/);
+  assert.match(browserHost, /ActualTaskbarIconResource/);
+  assert.match(browserHost, /managed-launch/);
   assert.match(browserHost, /Size = 24/);
   assert.doesNotMatch(browserHost, /Size = 16/);
   assert.match(browserHost, /PostMessage\(hwnd, 0x0010/);

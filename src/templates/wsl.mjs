@@ -193,13 +193,13 @@ public static class OmdChromeWindow {
     }
   }
 
-  public static string GetAppUserModelId(long handle) {
+  private static string GetStringProperty(long handle, uint propertyId) {
     var hwnd = new IntPtr(handle);
     if (!IsWindow(hwnd)) return null;
     var interfaceId = typeof(IPropertyStore).GUID;
     IPropertyStore store;
     if (SHGetPropertyStoreForWindow(hwnd, ref interfaceId, out store) < 0 || store == null) return null;
-    var key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
+    var key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), propertyId);
     var value = new PropVariant();
     try {
       if (store.GetValue(ref key, out value) < 0 || value.pointerValue == IntPtr.Zero) return null;
@@ -211,6 +211,9 @@ public static class OmdChromeWindow {
       Marshal.FinalReleaseComObject(store);
     }
   }
+
+  public static string GetAppUserModelId(long handle) { return GetStringProperty(handle, 5); }
+  public static string GetTaskbarIconResource(long handle) { return GetStringProperty(handle, 3); }
 }
 '@
 
@@ -333,21 +336,31 @@ function Wait-ForWindowToClose([long]$Handle) {
 
 function Set-TaskbarIdentity([long]$Handle) {
   $ExpectedAppUserModelId = [string]$Config.appUserModelId
-  if ($Config.preservePwaIdentity) {
-    $ExistingAppUserModelId = [OmdChromeWindow]::GetAppUserModelId($Handle)
-    if (-not [string]::Equals($ExistingAppUserModelId, $ExpectedAppUserModelId, [StringComparison]::OrdinalIgnoreCase)) {
-      throw 'Windows Chrome PWA 窗口的 AppUserModelID 与官方快捷方式不一致'
+  $ExpectedIconResource = [string]$Config.taskbarIconResource
+  $ExistingAppUserModelId = [OmdChromeWindow]::GetAppUserModelId($Handle)
+  $SourceAppUserModelId = [string]$Config.sourceAppUserModelId
+  if (-not [string]::IsNullOrWhiteSpace($SourceAppUserModelId) -and
+      -not [string]::Equals($ExistingAppUserModelId, $SourceAppUserModelId, [StringComparison]::OrdinalIgnoreCase) -and
+      -not [string]::Equals($ExistingAppUserModelId, $ExpectedAppUserModelId, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Windows Chrome PWA 窗口的 AppUserModelID 与检测到的官方快捷方式不一致'
+  }
+
+  for ($Attempt = 0; $Attempt -lt 5; $Attempt += 1) {
+    $PropertiesWereSet = [OmdChromeWindow]::SetTaskbarProperties(
+      $Handle,
+      $ExpectedAppUserModelId,
+      $ExpectedIconResource
+    )
+    Start-Sleep -Milliseconds 100
+    $ActualAppUserModelId = [OmdChromeWindow]::GetAppUserModelId($Handle)
+    $ActualTaskbarIconResource = [OmdChromeWindow]::GetTaskbarIconResource($Handle)
+    if ($PropertiesWereSet -and
+        [string]::Equals($ActualAppUserModelId, $ExpectedAppUserModelId, [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($ActualTaskbarIconResource, $ExpectedIconResource, [StringComparison]::OrdinalIgnoreCase)) {
+      return
     }
   }
-  $IdentityWasSet = [OmdChromeWindow]::SetTaskbarProperties(
-    $Handle,
-    $ExpectedAppUserModelId,
-    [string]$Config.taskbarIconResource
-  )
-  $ActualAppUserModelId = [OmdChromeWindow]::GetAppUserModelId($Handle)
-  if (-not $IdentityWasSet -or -not [string]::Equals($ActualAppUserModelId, $ExpectedAppUserModelId, [StringComparison]::OrdinalIgnoreCase)) {
-    throw '无法把 Windows Chrome App 窗口关联到启动快捷方式'
-  }
+  throw '无法把 Windows Chrome App 窗口关联到自有任务栏身份和图标'
 }
 
 function Read-PwaWindowHandle {
@@ -371,12 +384,20 @@ function Start-PwaWindow([datetime]$Deadline) {
     $Value = [string]$_
     if ($Value -match '[\s"]') { '"' + $Value.Replace('"', '\"') + '"' } else { $Value }
   })
-  Start-Process -FilePath $Config.pwaLauncherPath -ArgumentList ($QuotedArguments -join ' ') | Out-Null
-  $Handle = Wait-ForNewChromeWindow $Baseline $Deadline '无法确认已安装的 Windows Chrome App 窗口已打开'
-  Set-TaskbarIdentity $Handle
-  Restore-WindowSizeAndCenter $Handle
-  [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$Handle, [System.Text.Encoding]::ASCII)
-  return $Handle
+  $HandleDirectory = [System.IO.Path]::GetDirectoryName([string]$Config.windowHandlePath)
+  [System.IO.Directory]::CreateDirectory($HandleDirectory) | Out-Null
+  [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, 'managed-launch', [System.Text.Encoding]::ASCII)
+  try {
+    Start-Process -FilePath $Config.pwaLauncherPath -ArgumentList ($QuotedArguments -join ' ') | Out-Null
+    $Handle = Wait-ForNewChromeWindow $Baseline $Deadline '无法确认已安装的 Windows Chrome App 窗口已打开'
+    Set-TaskbarIdentity $Handle
+    Restore-WindowSizeAndCenter $Handle
+    [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$Handle, [System.Text.Encoding]::ASCII)
+    return $Handle
+  } catch {
+    Remove-Item -LiteralPath $Config.windowHandlePath -Force -ErrorAction SilentlyContinue
+    throw
+  }
 }
 
 function Test-HttpService {

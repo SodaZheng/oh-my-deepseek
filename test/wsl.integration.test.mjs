@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -26,7 +26,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
       env: { WSL_DISTRO_NAME: "Ubuntu-Test", USER: "tester", SHELL: "/bin/bash" },
     },
   );
-  const appUserModelId = `Chrome._crx_${installedAppId}`;
+  const officialPwaAppUserModelId = `Chrome._crx_${installedAppId}`;
+  const appUserModelId = `OpenAI.OhMyDeepSeek.${config.instanceId}`;
   config.homeDirectory = home;
   const toLocalPath = (windowsPath) => {
     assert.match(windowsPath, /^[A-Z]:\\/i);
@@ -50,6 +51,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
     },
     createShortcut(options) {
       const target = toLocalPath(options.shortcutPath);
+      mkdirSync(path.dirname(target), { recursive: true });
       writeFileSync(target, JSON.stringify(options));
     },
     compileNativeLauncher({ outputPathWsl }) {
@@ -58,11 +60,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
     findPwaShortcutIdentity() {
       return {
         shortcutPath: String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Chrome Apps\WSL Harness.lnk`,
-        appUserModelId: `Chrome._crx_${installedAppId}`,
+        appUserModelId: officialPwaAppUserModelId,
       };
-    },
-    copyShortcut({ sourcePath, shortcutPath, iconPath }) {
-      writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ sourcePath, launcherPath: proxyPath, appUserModelId: `Chrome._crx_${installedAppId}`, iconPath }));
     },
     createStartupMonitor({ monitorPath, shortcutPath }) {
       writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ monitorPath }));
@@ -102,13 +101,22 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(await pathExists(path.join(hostSupport, "pwa-monitor.exe")), true);
   const nativeLauncherSource = await readFile(path.join(hostSupport, "launcher.cs"), "utf8");
   assert.match(nativeLauncherSource, /SetCurrentProcessExplicitAppUserModelID/);
+  assert.match(nativeLauncherSource, new RegExp(Buffer.from(appUserModelId, "utf8").toString("base64")));
   assert.match(nativeLauncherSource, /CreateNoWindow = true/);
   assert.match(nativeLauncherSource, /Process\.Start/);
   assert.match(nativeLauncherSource, /process\.WaitForExit\(\)/);
+  const pwaMonitorSource = await readFile(path.join(hostSupport, "pwa-monitor.cs"), "utf8");
+  assert.match(pwaMonitorSource, new RegExp(Buffer.from(officialPwaAppUserModelId, "utf8").toString("base64")));
+  assert.doesNotMatch(pwaMonitorSource, new RegExp(Buffer.from(appUserModelId, "utf8").toString("base64")));
   const shortcutOptions = JSON.parse(await readFile(shortcut, "utf8"));
-  assert.match(shortcutOptions.launcherPath, /chrome_proxy\.exe$/i);
+  assert.match(shortcutOptions.launcherPath, /launcher\.exe$/i);
   assert.equal(shortcutOptions.appUserModelId, appUserModelId);
   assert.equal(shortcutOptions.iconPath, path.win32.join(result.hostSupportDirectory, "app.ico"));
+  const startMenuShortcut = toLocalPath(result.startMenuShortcutPath);
+  const startMenuShortcutOptions = JSON.parse(await readFile(startMenuShortcut, "utf8"));
+  assert.match(startMenuShortcutOptions.launcherPath, /launcher\.exe$/i);
+  assert.equal(startMenuShortcutOptions.appUserModelId, appUserModelId);
+  assert.equal(startMenuShortcutOptions.iconPath, path.win32.join(result.hostSupportDirectory, "app.ico"));
   const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
   assert.equal(storedConfig.platform, "wsl");
   assert.equal(storedConfig.launchMode, "windows-host-browser");
@@ -127,7 +135,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   const browserConfig = JSON.parse(await readFile(path.join(hostSupport, "browser-config.json"), "utf8"));
   assert.equal(browserConfig.launchMode, "installed-pwa");
   assert.equal(browserConfig.appUserModelId, appUserModelId);
-  assert.equal(browserConfig.preservePwaIdentity, true);
+  assert.equal(browserConfig.sourceAppUserModelId, officialPwaAppUserModelId);
   assert.equal(browserConfig.taskbarIconResource, `${path.win32.join(result.hostSupportDirectory, "app.ico")},0`);
   assert.equal(
     browserConfig.windowBoundsPath,
@@ -136,6 +144,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(result.serviceLaunchMode, "direct");
   assert.equal(result.taskbarIdentityMatched, true);
   assert.equal(result.usesOfficialPwaEntry, true);
+  assert.equal(result.officialPwaAppUserModelId, officialPwaAppUserModelId);
+  assert.equal(result.appUserModelId, appUserModelId);
   assert.equal(await pathExists(legacyWarmStartShortcut), false);
 });
 

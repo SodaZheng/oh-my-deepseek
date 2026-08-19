@@ -14,6 +14,7 @@ let ownsLock = false;
 let shuttingDown = false;
 let serviceSpawnError = null;
 let serviceStartedAt = null;
+let windowStateChild = null;
 
 mkdirSync(path.dirname(config.logPath), { recursive: true });
 mkdirSync(config.chromeProfilePath, { recursive: true });
@@ -62,6 +63,7 @@ async function main() {
     chromeChild = startChrome(true);
     await waitForChromeDevTools();
     const targetId = await waitForChromeTarget();
+    windowStateChild = await startWindowsWindowState();
     writeLog(\`Chrome App 已打开，target \${targetId}\`);
     await waitForChromeTargetToClose(targetId);
     writeLog("检测到 Chrome App 已关闭");
@@ -433,6 +435,31 @@ async function waitForChromeTargetToClose(targetId) {
   }
 }
 
+async function startWindowsWindowState() {
+  rmSync(config.windowStateReadyPath, { force: true });
+  const descriptor = openSync(config.logPath, "a", 0o600);
+  const child = spawn(powerShellExecutable(), [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", config.windowStateScriptPath,
+    "-ChromeProcessId", String(chromeChild.pid),
+    "-BoundsPath", config.windowBoundsPath,
+    "-ReadyPath", config.windowStateReadyPath,
+    "-TimeoutSeconds", String(Math.min(config.timeoutSeconds, 10)),
+  ], {
+    windowsHide: true,
+    stdio: ["ignore", descriptor, descriptor],
+  });
+  closeSync(descriptor);
+  child.once("error", (error) => writeLog(\`Windows 窗口状态监视器错误：\${error.message}\`));
+  const deadline = Date.now() + Math.min(config.timeoutSeconds, 10) * 1000;
+  while (Date.now() < deadline) {
+    if (existsSync(config.windowStateReadyPath)) return child;
+    if (child.exitCode !== null) throw new Error(\`Windows 窗口状态监视器提前退出，状态码 \${child.exitCode}\`);
+    await delay(100);
+  }
+  throw new Error("Windows 窗口状态监视器启动超时");
+}
+
 async function readChromeTargets() {
   const port = readDevToolsPort();
   if (!port) return null;
@@ -462,6 +489,9 @@ async function shutdown(exitCode) {
   if (chromeChild && chromeChild.exitCode === null) {
     stopWindowsBrowserBridge();
     await stopProcessTree(chromeChild.pid, config.platform === "wsl" ? "Windows Chrome 桥接器" : "Chrome");
+  }
+  if (windowStateChild && windowStateChild.exitCode === null) {
+    await stopProcessTree(windowStateChild.pid, "Windows 窗口状态监视器");
   }
   if (ownsService && serviceChild) await stopProcessTree(serviceChild.pid, "服务");
   releaseLock();

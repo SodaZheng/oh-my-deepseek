@@ -8,6 +8,7 @@ import {
   renderWindowsShortcutScript,
 } from "../templates/windows.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
+import { renderWindowsWindowState } from "../templates/windows-window-state.mjs";
 import { ensureDirectory, pathExists, removeExactTarget, writeText } from "../utils.mjs";
 
 export async function createWindowsLauncher(config, chrome, env = process.env) {
@@ -55,6 +56,9 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       chromePath: chrome.executable,
       nodePath: config.nodePath,
       chromeProfilePath: profileDirectory,
+      windowBoundsPath: path.join(stateDirectory, "window-size.json"),
+      windowStateReadyPath: path.join(stateDirectory, "window-state.ready"),
+      windowStateScriptPath: path.join(supportDirectory, "window-state.ps1"),
       lockPath: path.join(stateDirectory, "supervisor.lock"),
       logPath,
     };
@@ -69,6 +73,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       }),
     );
     await writeText(path.join(stagingDirectory, "supervisor.mjs"), renderSupervisor());
+    await writeText(path.join(stagingDirectory, "window-state.ps1"), withUtf8Bom(renderWindowsWindowState()));
     await writeText(path.join(stagingDirectory, "create-shortcut.ps1"), withUtf8Bom(renderWindowsShortcutScript()));
     if (chrome.icon && path.extname(chrome.icon).toLowerCase() === ".ico") {
       await copyFile(chrome.icon, path.join(stagingDirectory, "app.ico"));
