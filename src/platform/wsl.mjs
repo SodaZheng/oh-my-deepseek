@@ -21,8 +21,10 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
 
   const hostSupportRoot = path.win32.join(windowsEnvironment.localAppData, "Oh My DeepSeek", "wsl-apps");
   const hostSupportDirectory = path.win32.join(hostSupportRoot, appKey);
+  const hostStateDirectory = path.win32.join(windowsEnvironment.localAppData, "Oh My DeepSeek", "state", appKey);
   const hostSupportRootWsl = interop.toWslPath(hostSupportRoot);
   const hostSupportDirectoryWsl = interop.toWslPath(hostSupportDirectory);
+  const hostStateDirectoryWsl = interop.toWslPath(hostStateDirectory);
   const powerShellPathWsl = interop.toWslPath(windowsEnvironment.powerShell);
   const resolvedDirectService = await interop.resolveDirectService(config);
   const directService = resolvedDirectService
@@ -81,6 +83,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
 
   await ensureDirectory(supportRoot);
   await ensureDirectory(hostSupportRootWsl);
+  await ensureDirectory(hostStateDirectoryWsl);
   await ensureDirectory(path.dirname(shortcutPathWsl));
   if (directService?.warmupArguments) {
     await ensureDirectory(directService.nodeCompileCachePath);
@@ -136,6 +139,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       appUserModelId,
       preservePwaIdentity: usesOfficialPwaEntry,
       taskbarIconResource: `${installedIconPath},0`,
+      windowBoundsPath: path.win32.join(hostStateDirectory, "window-size.json"),
       windowHandlePath: path.win32.join(hostSupportDirectory, "app-window.txt"),
       browserPidPath: path.win32.join(hostSupportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,

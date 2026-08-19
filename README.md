@@ -14,7 +14,7 @@
 - Node.js 20+
 - Google Chrome
 
-默认使用项目根目录的 `icon.icns`；Windows 安装包使用由它生成的 `icon.ico`。仍可通过 `--icon` 覆盖单个 App 的图标。
+macOS 默认使用项目根目录的 `icon.icns`；Windows 使用针对任务栏小尺寸单独优化的 `icon.ico`，其主图保存在 `assets/windows-icon-master-v2.png`。仍可通过 `--icon` 覆盖单个 App 的图标。
 
 ## 快速开始
 
@@ -76,7 +76,7 @@ WSL 创建入口时会扫描 Windows Chrome 的 `Default` 和 `Profile N`，按�
 
 Windows 宿主浏览器桥接器只在 App 窗口运行期间存在。PWA 模式使用窗口句柄状态；URL 回退模式复用单个 HTTP 客户端与 Chrome 进程对象。空闲状态不安装常驻 Windows 服务、WSL 守护进程或预热任务。
 
-Windows/WSL 启动入口不会向真实 App 窗口写死位置或尺寸；关闭 App 前调整好的窗口大小由对应 Chrome Profile 保存，并在下次启动时恢复。已安装 PWA 使用 Windows Chrome 的原有 Profile，URL 回退模式使用本入口自己的固定 Profile，因此不同入口之间不会互相覆盖窗口状态。
+Windows/WSL 启动入口会记录真实 App 窗口的外层宽高；下次启动时恢复该宽高，并在 Chrome 选中的当前显示器可用区域内居中。窗口尺寸记录独立保存在本入口的 Windows 状态目录中，不依赖 Chrome 对内容区域尺寸的换算，因此不会因为标题栏、边框或任务栏产生二次启动尺寸偏差；如果显示器分辨率变小，尺寸会自动收敛到可用区域内。
 
 Windows 默认可通过 `localhost` 访问 WSL 内的 Web 服务。如果机器关闭了 WSL localhost 转发、被防火墙/VPN 拦截，或 DSH 没有监听配置中的地址和端口，启动器会弹出明确错误并保留日志；不会改写网络或防火墙设置。
 

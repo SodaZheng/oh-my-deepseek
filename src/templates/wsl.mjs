@@ -30,12 +30,48 @@ public static class OmdChromeWindow {
   [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
   [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int command);
   [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
+  [DllImport("user32.dll")] private static extern bool GetWindowPlacement(IntPtr hwnd, ref WindowPlacement placement);
+  [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+  [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
   [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
   [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder path, ref int size);
   [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
   [DllImport("shell32.dll")] private static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore propertyStore);
   [DllImport("ole32.dll")] private static extern int PropVariantClear(ref PropVariant value);
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct Point {
+    internal int x;
+    internal int y;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct Rect {
+    internal int left;
+    internal int top;
+    internal int right;
+    internal int bottom;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct WindowPlacement {
+    internal int length;
+    internal int flags;
+    internal int showCommand;
+    internal Point minimumPosition;
+    internal Point maximumPosition;
+    internal Rect normalPosition;
+  }
+
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  private struct MonitorInfo {
+    internal int size;
+    internal Rect monitor;
+    internal Rect work;
+    internal uint flags;
+  }
 
   [StructLayout(LayoutKind.Sequential)]
   private struct PropertyKey {
@@ -102,6 +138,32 @@ public static class OmdChromeWindow {
     if (!IsWindow(hwnd)) return false;
     ShowWindow(hwnd, 9);
     return SetForegroundWindow(hwnd);
+  }
+  public static int[] GetNormalSize(long handle) {
+    var hwnd = new IntPtr(handle);
+    if (!IsWindow(hwnd)) return null;
+    var placement = new WindowPlacement { length = Marshal.SizeOf(typeof(WindowPlacement)) };
+    if (!GetWindowPlacement(hwnd, ref placement)) return null;
+    var width = placement.normalPosition.right - placement.normalPosition.left;
+    var height = placement.normalPosition.bottom - placement.normalPosition.top;
+    if (width <= 0 || height <= 0) return null;
+    return new[] { width, height };
+  }
+  public static bool CenterWithSize(long handle, int requestedWidth, int requestedHeight) {
+    var hwnd = new IntPtr(handle);
+    if (!IsWindow(hwnd) || requestedWidth <= 0 || requestedHeight <= 0) return false;
+    var monitor = MonitorFromWindow(hwnd, 2);
+    if (monitor == IntPtr.Zero) return false;
+    var info = new MonitorInfo { size = Marshal.SizeOf(typeof(MonitorInfo)) };
+    if (!GetMonitorInfo(monitor, ref info)) return false;
+    var workWidth = info.work.right - info.work.left;
+    var workHeight = info.work.bottom - info.work.top;
+    var width = Math.Max(320, Math.Min(requestedWidth, workWidth));
+    var height = Math.Max(240, Math.Min(requestedHeight, workHeight));
+    var x = info.work.left + (workWidth - width) / 2;
+    var y = info.work.top + (workHeight - height) / 2;
+    ShowWindow(hwnd, 9);
+    return SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, 0x0004 | 0x0010);
   }
   public static bool Close(long handle) {
     var hwnd = new IntPtr(handle);
@@ -218,6 +280,57 @@ function Wait-ForNewChromeWindow([hashtable]$Baseline, [datetime]$Deadline, [str
   throw $ErrorMessage
 }
 
+function Read-SavedWindowSize {
+  if (-not (Test-Path -LiteralPath $Config.windowBoundsPath -PathType Leaf)) { return $null }
+  try {
+    $Saved = Get-Content -LiteralPath $Config.windowBoundsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $Width = [int]$Saved.width
+    $Height = [int]$Saved.height
+    if ($Width -lt 320 -or $Height -lt 240 -or $Width -gt 32768 -or $Height -gt 32768) { return $null }
+    return [pscustomobject]@{ width = $Width; height = $Height }
+  } catch {
+    return $null
+  }
+}
+
+function Save-WindowSize([long]$Handle) {
+  $Size = [OmdChromeWindow]::GetNormalSize($Handle)
+  if (-not $Size -or $Size.Count -lt 2) { return }
+  $Width = [int]$Size[0]
+  $Height = [int]$Size[1]
+  if ($Width -lt 320 -or $Height -lt 240) { return }
+  $Key = ('{0}x{1}' -f $Width, $Height)
+  if ($script:LastSavedWindowSize -eq $Key) { return }
+  $Directory = [System.IO.Path]::GetDirectoryName([string]$Config.windowBoundsPath)
+  [System.IO.Directory]::CreateDirectory($Directory) | Out-Null
+  $Json = @{ width = $Width; height = $Height } | ConvertTo-Json -Compress
+  [System.IO.File]::WriteAllText([string]$Config.windowBoundsPath, $Json, [System.Text.UTF8Encoding]::new($false))
+  $script:LastSavedWindowSize = $Key
+}
+
+function Restore-WindowSizeAndCenter([long]$Handle) {
+  $Saved = Read-SavedWindowSize
+  if ($Saved) {
+    $Width = [int]$Saved.width
+    $Height = [int]$Saved.height
+  } else {
+    $Current = [OmdChromeWindow]::GetNormalSize($Handle)
+    if (-not $Current -or $Current.Count -lt 2) { return }
+    $Width = [int]$Current[0]
+    $Height = [int]$Current[1]
+  }
+  [OmdChromeWindow]::CenterWithSize($Handle, $Width, $Height) | Out-Null
+  Start-Sleep -Milliseconds 100
+  [OmdChromeWindow]::CenterWithSize($Handle, $Width, $Height) | Out-Null
+}
+
+function Wait-ForWindowToClose([long]$Handle) {
+  while ([OmdChromeWindow]::IsAlive($Handle)) {
+    Save-WindowSize $Handle
+    Start-Sleep -Milliseconds 100
+  }
+}
+
 function Set-TaskbarIdentity([long]$Handle) {
   $ExpectedAppUserModelId = [string]$Config.appUserModelId
   if ($Config.preservePwaIdentity) {
@@ -261,6 +374,7 @@ function Start-PwaWindow([datetime]$Deadline) {
   Start-Process -FilePath $Config.pwaLauncherPath -ArgumentList ($QuotedArguments -join ' ') | Out-Null
   $Handle = Wait-ForNewChromeWindow $Baseline $Deadline '无法确认已安装的 Windows Chrome App 窗口已打开'
   Set-TaskbarIdentity $Handle
+  Restore-WindowSizeAndCenter $Handle
   [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$Handle, [System.Text.Encoding]::ASCII)
   return $Handle
 }
@@ -371,7 +485,7 @@ function Run-BrowserLifecycle {
   if ($Config.launchMode -eq 'installed-pwa') {
     $Handle = Start-PwaWindow ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30)))
     [OmdChromeWindow]::Activate($Handle) | Out-Null
-    while ([OmdChromeWindow]::IsAlive($Handle)) { Start-Sleep -Milliseconds 500 }
+    Wait-ForWindowToClose $Handle
     Remove-Item -LiteralPath $Config.windowHandlePath -Force -ErrorAction SilentlyContinue
     return
   }
@@ -382,12 +496,14 @@ function Run-BrowserLifecycle {
   $Target = Wait-ForAppTarget ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30)))
   $WindowHandle = Wait-ForNewChromeWindow $WindowBaseline ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30))) '无法确认 Windows Chrome App 窗口已打开'
   Set-TaskbarIdentity $WindowHandle
+  Restore-WindowSizeAndCenter $WindowHandle
   Invoke-DevTools ('/json/activate/' + [string]$Target.id) | Out-Null
   while ($true) {
+    Save-WindowSize $WindowHandle
     $Snapshot = Get-TargetSnapshot
     if ($Snapshot.ok -and -not (@($Snapshot.items) | Where-Object { $_.id -eq $Target.id })) { return }
     if (-not (Test-ManagedChrome)) { return }
-    Start-Sleep -Milliseconds 750
+    Start-Sleep -Milliseconds 100
   }
 }
 

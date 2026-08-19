@@ -129,6 +129,10 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(browserConfig.appUserModelId, appUserModelId);
   assert.equal(browserConfig.preservePwaIdentity, true);
   assert.equal(browserConfig.taskbarIconResource, `${path.win32.join(result.hostSupportDirectory, "app.ico")},0`);
+  assert.equal(
+    browserConfig.windowBoundsPath,
+    path.win32.join(String.raw`C:\Users\tester\AppData\Local`, "Oh My DeepSeek", "state", `${config.slug}-${config.instanceId.slice(0, 8)}`, "window-size.json"),
+  );
   assert.equal(result.serviceLaunchMode, "direct");
   assert.equal(result.taskbarIdentityMatched, true);
   assert.equal(result.usesOfficialPwaEntry, true);

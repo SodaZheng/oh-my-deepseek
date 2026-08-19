@@ -9,16 +9,15 @@ if (process.platform !== "darwin") {
 }
 
 const projectRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const source = path.join(projectRoot, "icon.icns");
+const source = path.join(projectRoot, "assets", "windows-icon-master-v2.png");
 const output = path.join(projectRoot, "icon.ico");
 const sizes = [16, 32, 48, 64, 128, 256];
-const windowsCropSize = 896;
+const windowsCropSize = 832;
 const temporaryDirectory = await mkdtemp(path.join(os.tmpdir(), "oh-my-deepseek-icons-"));
 
 try {
-  // ICNS files can contain independently authored (or stale) representations.
-  // Normalize through the largest artwork first so sips cannot pick a different
-  // embedded image for each Windows ICO size.
+  // Normalize the explicit Windows artwork once so every ICO representation
+  // uses the same large-mark composition.
   const normalizedSource = path.join(temporaryDirectory, "source-1024.png");
   runSips(
     ["-z", "1024", "1024", "-s", "format", "png", source, "--out", normalizedSource],
