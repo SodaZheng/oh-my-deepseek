@@ -113,7 +113,7 @@ function renderHelp(command) {
 检查 Chrome、服务命令和 Node.js 环境。
 
 常用选项：
-  --command, -c <命令>   要检查的服务命令，默认 dsh web
+  --command, -c <命令>   要检查的服务命令，默认 dsh web --no-open
   --chrome <路径>        Chrome.app、Chrome 可执行文件或 chrome.exe
   --chrome-app-id <ID>   已安装 Chrome Web App ID（通常自动检测）
   --json                 输出 JSON
@@ -124,12 +124,12 @@ function renderHelp(command) {
   return `oh-my-deepseek create [选项]
 
 创建一个桌面入口：静默启动本地服务，等待页面就绪，再用 Google Chrome
-的 --app 模式打开无地址栏窗口；关闭 App 后自动清理本次启动的服务。
+的 --app 模式打开无地址栏窗口；关闭 App 后强制清理配置端口的监听进程。
 
 选项：
   --name, -n <名称>      应用名称，默认 DeepSeek Harness
   --url, -u <URL>        Chrome App URL，默认 http://127.0.0.1:3080/
-  --command, -c <命令>   服务命令，默认 dsh web
+  --command, -c <命令>   服务命令，默认 dsh web --no-open
   --cwd <目录>           服务工作目录，默认执行 create 时的当前目录
   --timeout, -t <秒>     等待服务就绪时间，默认 45
   --chrome <路径>        Chrome.app、Chrome 可执行文件或 chrome.exe

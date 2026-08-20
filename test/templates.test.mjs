@@ -25,6 +25,16 @@ test("macOS templates preserve config and escape plist values", () => {
   assert.match(supervisor, /--user-data-dir=/);
   assert.match(supervisor, /DevToolsActivePort/);
   assert.match(supervisor, /stopProcessTree/);
+  assert.match(supervisor, /stopConfiguredPortListeners/);
+  assert.match(supervisor, /requireConfiguredPortReleased/);
+  assert.match(supervisor, /\/usr\/sbin\/lsof/);
+  assert.match(supervisor, /Get-NetTCPConnection/);
+  assert.match(supervisor, /netstat\.exe/);
+  assert.match(supervisor, /\/proc\/net\/tcp6/);
+  assert.equal(supervisor.includes("/proc/${pid}/fd"), true);
+  assert.match(supervisor, /端口 \\?\$\{port\} 已释放/);
+  assert.match(supervisor, /process\.kill\(pid, force \? "SIGKILL" : "SIGTERM"\)/);
+  assert.match(supervisor, /if \(force\) argumentsList\.push\("\/f"\)/);
   assert.match(supervisor, /window\.__DSH_BOOT__/);
   assert.match(supervisor, /<title>DeepSeek Harness<\/title>/);
 });

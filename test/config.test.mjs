@@ -8,7 +8,7 @@ test("normalizes the default DeepSeek Harness configuration", () => {
   assert.equal(config.url, "http://127.0.0.1:3080/");
   assert.equal(config.readyHost, "127.0.0.1");
   assert.equal(config.readyPort, 3080);
-  assert.equal(config.serviceCommand, "dsh web");
+  assert.equal(config.serviceCommand, "dsh web --no-open");
   assert.equal(config.workingDirectory, "/tmp/project");
   assert.equal(config.timeoutSeconds, 45);
 });

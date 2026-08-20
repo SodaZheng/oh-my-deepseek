@@ -1,5 +1,5 @@
 export function renderSupervisor() {
-  return `import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+  return `import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,7 +49,7 @@ async function main() {
     ownsService = true;
     serviceReadyPromise = waitForService();
   } else {
-    writeLog("检测到已有服务；本次不会在退出时停止它");
+    writeLog("检测到已有服务；App 退出时仍会强制清理对应端口");
     serviceReadyPromise = Promise.resolve(true);
   }
 
@@ -67,6 +67,7 @@ async function main() {
     writeLog(\`Chrome App 已打开，target \${targetId}\`);
     await waitForChromeTargetToClose(targetId);
     writeLog("检测到 Chrome App 已关闭");
+    await requireConfiguredPortReleased();
     await shutdown(0);
     return;
   }
@@ -84,6 +85,7 @@ async function main() {
   writeLog(\`Chrome App 已打开，target \${targetId}\`);
   await waitForChromeTargetToClose(targetId);
   writeLog("检测到 Chrome App 已关闭");
+  await requireConfiguredPortReleased();
   await shutdown(0);
 }
 
@@ -159,7 +161,7 @@ async function runWindowsHostBrowser() {
     ownsService = true;
     serviceReadyPromise = waitForService();
   } else {
-    writeLog("检测到已有服务；本次不会在退出时停止它");
+    writeLog("检测到已有服务；App 退出时仍会强制清理对应端口");
     serviceReadyPromise = Promise.resolve(true);
   }
 
@@ -182,6 +184,7 @@ async function runWindowsHostBrowser() {
     throw new Error(detail || browserResult.error?.message || \`Windows Chrome 桥接器退出，状态码 \${browserResult.code}\`);
   }
   writeLog("检测到 Windows Chrome App 已关闭");
+  await requireConfiguredPortReleased();
   await shutdown(0);
 }
 
@@ -229,13 +232,14 @@ async function runChromeAppShim() {
     }
     logOwnedServiceReady();
   } else {
-    writeLog("检测到已有服务；本次不会在退出时停止它");
+    writeLog("检测到已有服务；App 退出时仍会强制清理对应端口");
   }
 
   const opened = spawnSync("/usr/bin/open", [config.chromeShimPath], { encoding: "utf8" });
   if (opened.error || opened.status !== 0) throw new Error(\`无法打开 Chrome App Shim：\${opened.error?.message || opened.stderr || opened.stdout}\`);
   await waitForChromeShimLifecycle();
   writeLog("检测到 Chrome App Shim 已关闭");
+  await requireConfiguredPortReleased();
   await shutdown(0);
 }
 
@@ -261,6 +265,185 @@ async function waitForChromeShimLifecycle() {
 function chromeShimIsRunning() {
   const result = spawnSync("/bin/ps", ["-ax", "-o", "command="], { encoding: "utf8" });
   return result.status === 0 && result.stdout.split("\\n").some((line) => line.startsWith(config.chromeShimExecutablePath));
+}
+
+async function stopConfiguredPortListeners() {
+  const port = Number(config.readyPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    writeLog(\`无法清理无效端口：\${config.readyPort}\`);
+    return false;
+  }
+
+  const signaled = new Set();
+  const gracefulDeadline = Date.now() + 2000;
+  while (Date.now() < gracefulDeadline) {
+    const pids = listeningPidsForPort(port);
+    if (pids === null) {
+      await delay(100);
+      continue;
+    }
+    if (pids.length === 0) {
+      if (await portStaysClosed(port, 300)) {
+        writeLog(\`端口 \${port} 已释放\`);
+        return true;
+      }
+      continue;
+    }
+    for (const pid of pids) {
+      if (!signaled.has(pid)) {
+        writeLog(\`正在停止端口 \${port} 的监听进程，PID \${pid}\`);
+        signaled.add(pid);
+      }
+      terminatePortListener(pid, false, port);
+    }
+    await delay(100);
+  }
+
+  const forceSignaled = new Set();
+  const forceDeadline = Date.now() + 3000;
+  while (Date.now() < forceDeadline) {
+    const pids = listeningPidsForPort(port);
+    if (pids === null) {
+      await delay(100);
+      continue;
+    }
+    if (pids.length === 0) {
+      if (await portStaysClosed(port, 300)) {
+        writeLog(\`端口 \${port} 已强制释放\`);
+        return true;
+      }
+      continue;
+    }
+    for (const pid of pids) {
+      if (!forceSignaled.has(pid)) {
+        writeLog(\`正在强制停止端口 \${port} 的监听进程，PID \${pid}\`);
+        forceSignaled.add(pid);
+      }
+      terminatePortListener(pid, true, port);
+    }
+    await delay(100);
+  }
+
+  const remaining = listeningPidsForPort(port);
+  writeLog(remaining === null
+    ? \`端口 \${port} 未能确认已释放\`
+    : \`端口 \${port} 未能释放\${remaining.length > 0 ? \`，仍有 PID \${remaining.join(",")}\` : ""}\`);
+  return false;
+}
+
+async function requireConfiguredPortReleased() {
+  if (await stopConfiguredPortListeners()) return;
+  throw new Error(\`App 已关闭，但端口 \${config.readyPort} 未能释放，请查看日志\`);
+}
+
+function listeningPidsForPort(port) {
+  if (config.platform === "win32") return listeningWindowsPidsForPort(port);
+  if (config.platform === "wsl") return listeningLinuxPidsForPort(port);
+  const result = spawnSync("/usr/sbin/lsof", ["-nP", "-t", \`-iTCP:\${port}\`, "-sTCP:LISTEN"], { encoding: "utf8" });
+  if (result.error || (result.status !== 0 && result.status !== 1)) {
+    writeLog(\`查询端口 \${port} 的监听进程失败：\${result.error?.message || result.stderr || result.stdout}\`);
+    return null;
+  }
+  return parsePidLines(result.stdout);
+}
+
+function listeningWindowsPidsForPort(port) {
+  const script = "$ErrorActionPreference = 'Stop'; Get-NetTCPConnection -State Listen -LocalPort " + port
+    + " | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { [Console]::Out.WriteLine([string]$_) }";
+  const result = spawnSync(powerShellExecutable(), [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script,
+  ], { encoding: "utf8", windowsHide: true });
+  if (!result.error && result.status === 0) return parsePidLines(result.stdout);
+
+  const fallback = spawnSync("netstat.exe", ["-ano", "-p", "tcp"], { encoding: "utf8", windowsHide: true });
+  if (fallback.error || fallback.status !== 0) {
+    writeLog(\`查询端口 \${port} 的 Windows 监听进程失败：\${result.error?.message || result.stderr || fallback.error?.message || fallback.stderr}\`);
+    return null;
+  }
+  const pids = [];
+  for (const line of fallback.stdout.split(/\\r?\\n/)) {
+    const fields = line.trim().split(/\\s+/);
+    if (fields.length < 5 || fields[0].toUpperCase() !== "TCP") continue;
+    const portMatch = fields[1].match(/:(\\d+)$/);
+    if (!portMatch || Number(portMatch[1]) !== port) continue;
+    if (fields[3].toUpperCase() !== "LISTENING") continue;
+    pids.push(fields.at(-1));
+  }
+  return parsePidLines(pids.join("\\n"));
+}
+
+function listeningLinuxPidsForPort(port) {
+  const socketInodes = new Set();
+  for (const tablePath of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    let table;
+    try { table = readFileSync(tablePath, "utf8"); } catch { continue; }
+    for (const line of table.split(/\\r?\\n/).slice(1)) {
+      const fields = line.trim().split(/\\s+/);
+      if (fields.length < 10 || fields[3] !== "0A") continue;
+      const localPort = Number.parseInt(fields[1]?.split(":").at(-1), 16);
+      if (localPort === port && fields[9]) socketInodes.add(fields[9]);
+    }
+  }
+  if (socketInodes.size === 0) return [];
+
+  const pids = [];
+  let processes;
+  try { processes = readdirSync("/proc", { withFileTypes: true }); } catch (error) {
+    writeLog(\`查询端口 \${port} 的 WSL 监听进程失败：\${error.message}\`);
+    return null;
+  }
+  for (const entry of processes) {
+    if (!entry.isDirectory() || !/^\\d+$/.test(entry.name)) continue;
+    const pid = Number(entry.name);
+    if (pid <= 1 || pid === process.pid) continue;
+    let descriptors;
+    try { descriptors = readdirSync(\`/proc/\${pid}/fd\`); } catch { continue; }
+    for (const descriptor of descriptors) {
+      let target;
+      try { target = readlinkSync(\`/proc/\${pid}/fd/\${descriptor}\`); } catch { continue; }
+      const match = target.match(/^socket:\\[(\\d+)\\]$/);
+      if (match && socketInodes.has(match[1])) {
+        pids.push(pid);
+        break;
+      }
+    }
+  }
+  return [...new Set(pids)];
+}
+
+function parsePidLines(output) {
+  return [...new Set(String(output)
+    .split(/\\r?\\n/)
+    .map((value) => Number(value.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 1 && pid !== process.pid))];
+}
+
+function terminatePortListener(pid, force, port) {
+  if (config.platform === "win32") {
+    const argumentsList = ["/pid", String(pid), "/t"];
+    if (force) argumentsList.push("/f");
+    const result = spawnSync("taskkill.exe", argumentsList, { windowsHide: true, encoding: "utf8" });
+    if (result.error || (result.status !== 0 && processIsAlive(pid))) {
+      writeLog(\`\${force ? "强制" : ""}停止端口 \${port} 的 Windows 监听进程失败：\${result.error?.message || result.stderr || result.stdout}\`);
+    }
+    return;
+  }
+  try {
+    process.kill(pid, force ? "SIGKILL" : "SIGTERM");
+  } catch (error) {
+    if (error.code !== "ESRCH") writeLog(\`\${force ? "强制" : ""}停止端口 \${port} 的监听进程失败：\${error.message}\`);
+  }
+}
+
+async function portStaysClosed(port, milliseconds) {
+  const deadline = Date.now() + milliseconds;
+  while (Date.now() < deadline) {
+    const pids = listeningPidsForPort(port);
+    if (pids === null || pids.length > 0) return false;
+    await delay(50);
+  }
+  const pids = listeningPidsForPort(port);
+  return pids !== null && pids.length === 0;
 }
 
 function startService() {

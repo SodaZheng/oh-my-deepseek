@@ -6,6 +6,6 @@ export const CONFIG_VERSION = 14;
 export const DEFAULTS = Object.freeze({
   name: "DeepSeek Harness",
   url: "http://127.0.0.1:3080/",
-  serviceCommand: "dsh web",
+  serviceCommand: "dsh web --no-open",
   timeoutSeconds: 45,
 });
