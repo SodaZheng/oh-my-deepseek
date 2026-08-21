@@ -29,6 +29,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
     serviceCommand: config.serviceCommand,
     workingDirectory: config.workingDirectory,
     logPath,
+    restartPersistence: "shortcut-on-disk",
   };
 
   if (config.dryRun) return { ...result, dryRun: true };
@@ -95,7 +96,67 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
     scriptPath: path.join(supportDirectory, "create-shortcut.ps1"),
   });
 
+  const persistence = await inspectWindowsRestartPersistence(config, env);
+  if (!persistence.ok) throw new Error(`Windows 重启启动链验证失败：${persistence.detail}`);
+
   return result;
+}
+
+export async function inspectWindowsRestartPersistence(config, env = process.env) {
+  const localAppData = env.LOCALAPPDATA ?? path.join(config.homeDirectory || os.homedir(), "AppData", "Local");
+  const appKey = `${config.slug}-${config.instanceId.slice(0, 8)}`;
+  const supportDirectory = path.join(localAppData, "Oh My DeepSeek", "apps", appKey);
+  const shortcutDirectory = config.output ?? getWindowsDesktopDirectory(env);
+  const shortcutPath = path.join(shortcutDirectory, `${config.name}.lnk`);
+  const launcherPath = path.join(supportDirectory, "launcher.js");
+  const requiredPaths = [
+    shortcutPath,
+    launcherPath,
+    path.join(supportDirectory, "supervisor.mjs"),
+    path.join(supportDirectory, "config.json"),
+  ];
+  const existence = await Promise.all(requiredPaths.map(pathExists));
+  if (!existence.some(Boolean)) {
+    return { name: "重启后桌面启动", ok: true, detail: "尚未创建此入口；Windows 桌面快捷方式创建后不依赖登录前的进程" };
+  }
+  if (!existence.every(Boolean)) {
+    const missing = requiredPaths.filter((_, index) => !existence[index]);
+    return { name: "重启后桌面启动", ok: false, detail: `启动产物不完整：缺少 ${missing.join("、")}` };
+  }
+
+  let storedConfig;
+  try {
+    storedConfig = JSON.parse(await readFile(path.join(supportDirectory, "config.json"), "utf8"));
+  } catch (error) {
+    return { name: "重启后桌面启动", ok: false, detail: `无法读取启动配置：${error.message}` };
+  }
+  if (!(await pathExists(storedConfig.nodePath))) {
+    return { name: "重启后桌面启动", ok: false, detail: `快捷方式保存的 Node.js 已不存在：${storedConfig.nodePath}` };
+  }
+
+  const escapedShortcut = shortcutPath.replaceAll("'", "''");
+  const inspected = spawnSync(
+    "powershell.exe",
+    [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+      `$S=(New-Object -ComObject WScript.Shell).CreateShortcut('${escapedShortcut}'); [Console]::Write(($S.TargetPath + [Environment]::NewLine + $S.Arguments))`,
+    ],
+    { encoding: "utf8", windowsHide: true },
+  );
+  const lines = String(inspected.stdout).split(/\r?\n/);
+  const targetPath = lines[0]?.trim() ?? "";
+  const argumentsValue = lines.slice(1).join("\n");
+  const ok = !inspected.error
+    && inspected.status === 0
+    && path.basename(targetPath).toLowerCase() === "wscript.exe"
+    && argumentsValue.toLowerCase().includes(launcherPath.toLowerCase());
+  return {
+    name: "重启后桌面启动",
+    ok,
+    detail: ok
+      ? `快捷方式和全部本地启动依赖均已落盘：${shortcutPath}`
+      : `桌面快捷方式目标无效：${targetPath || inspected.stderr || inspected.error?.message || "无法读取"}`,
+  };
 }
 
 function withUtf8Bom(contents) {

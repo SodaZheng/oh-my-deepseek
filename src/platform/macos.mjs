@@ -4,8 +4,13 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
-import { renderMacChromeShimInfo, renderMacInfoPlist, renderMacLaunchAgent, renderMacLauncher, renderMacMonitor } from "../templates/macos.mjs";
+import { renderMacChromeShimInfo, renderMacInfoPlist, renderMacLauncher } from "../templates/macos.mjs";
 import { renderMacNativeMonitorSource } from "../templates/macos-native-monitor.mjs";
+import {
+  renderMacManagedLaunchAgent,
+  renderMacServiceManagerInfo,
+  renderMacServiceManagerSource,
+} from "../templates/macos-service-manager.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
 import { ensureDirectory, pathExists, removeExactTarget, writeText } from "../utils.mjs";
 
@@ -25,12 +30,16 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
   const legacyChromeShimPath = chromeAppId ? path.join(stateDirectory, "chrome-shim", `${config.name}.app`) : null;
   const chromeShimBundleId = chromeAppId ? `com.google.Chrome.app.${chromeAppId}` : null;
   const supervisorPath = path.join(stateDirectory, "supervisor.mjs");
-  const nodeMonitorPath = path.join(stateDirectory, "monitor.mjs");
   const nativeMonitorSourcePath = path.join(stateDirectory, "monitor.m");
   const nativeMonitorPath = path.join(stateDirectory, "monitor");
   const monitorConfigPath = path.join(stateDirectory, "monitor-config.json");
   const launchAgentLabel = `dev.ohmydeepseek.monitor.${config.instanceId}`;
-  const launchAgentPath = path.join(homeDirectory, "Library", "LaunchAgents", `${launchAgentLabel}.plist`);
+  const launchAgentPlistName = `${launchAgentLabel}.plist`;
+  const legacyLaunchAgentPath = path.join(homeDirectory, "Library", "LaunchAgents", launchAgentPlistName);
+  const serviceBundlePath = path.join(stateDirectory, "Oh My DeepSeek Background Launcher.app");
+  const serviceManagerPath = path.join(serviceBundlePath, "Contents", "MacOS", "service-manager");
+  const managedMonitorPath = path.join(serviceBundlePath, "Contents", "MacOS", "monitor");
+  const managedLaunchAgentPath = path.join(serviceBundlePath, "Contents", "Library", "LaunchAgents", launchAgentPlistName);
   const result = {
     platform: "darwin",
     appPath,
@@ -42,7 +51,10 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
     usesLaunchMonitor: Boolean(chromeAppId),
     monitorPath: chromeAppId ? nativeMonitorPath : null,
     monitorMode: chromeAppId ? "native-preferred" : null,
-    launchAgentPath: chromeAppId ? launchAgentPath : null,
+    launchAgentPath: chromeAppId ? managedLaunchAgentPath : null,
+    serviceBundlePath: chromeAppId ? serviceBundlePath : null,
+    restartPersistence: chromeAppId ? "pending" : "not-required",
+    requiresUserApproval: false,
     url: config.url,
     serviceCommand: config.serviceCommand,
     workingDirectory: config.workingDirectory,
@@ -55,7 +67,9 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
   if (chrome.icon && !(await pathExists(chrome.icon))) throw new Error(`图标文件不存在：${chrome.icon}`);
 
   if (chromeAppId) {
-    if (runtime.manageLaunchAgent !== false) stopMacMonitor(launchAgentLabel);
+    if (runtime.manageLaunchAgent !== false && await pathExists(legacyLaunchAgentPath)) {
+      stopMacMonitor(launchAgentLabel);
+    }
     await updateInstalledChromeWebAppIcons({ homeDirectory, appId: chromeAppId, iconPath: chrome.icon });
     await ensureDirectory(stateDirectory);
     await writeText(supervisorPath, renderSupervisor());
@@ -84,7 +98,6 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
         logPath,
       }, null, 2)}\n`,
     );
-    await writeText(nodeMonitorPath, renderMacMonitor());
     await writeText(nativeMonitorSourcePath, renderMacNativeMonitorSource());
     await writeText(
       monitorConfigPath,
@@ -104,15 +117,50 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
     );
     const nativeMonitorReady = runtime.compileNativeMonitor !== false
       && compileMacMonitor(nativeMonitorSourcePath, nativeMonitorPath);
-    const monitorProgramArguments = nativeMonitorReady
-      ? [nativeMonitorPath, monitorConfigPath]
-      : [config.nodePath, nodeMonitorPath];
-    result.monitorPath = nativeMonitorReady ? nativeMonitorPath : nodeMonitorPath;
-    result.monitorMode = nativeMonitorReady ? "native-events" : "node-polling-fallback";
+    const serviceManagerSourcePath = path.join(stateDirectory, "service-manager.m");
+    const serviceManagerBinaryPath = path.join(stateDirectory, "service-manager");
     await writeText(
-      launchAgentPath,
-      renderMacLaunchAgent({ label: launchAgentLabel, programArguments: monitorProgramArguments, logPath }),
+      serviceManagerSourcePath,
+      renderMacServiceManagerSource({ launchAgentPlistName }),
     );
+    const managedServiceReady = nativeMonitorReady && compileMacServiceManager(
+      serviceManagerSourcePath,
+      serviceManagerBinaryPath,
+    );
+    const reusableManagedService = await pathExists(serviceManagerPath)
+      && await pathExists(managedMonitorPath)
+      && await pathExists(managedLaunchAgentPath);
+    if (managedServiceReady || reusableManagedService) {
+      if (managedServiceReady) {
+        unregisterMacManagedMonitor(serviceManagerPath);
+        await createMacManagedMonitorService({
+          config,
+          serviceBundlePath,
+          serviceManagerBinaryPath,
+          nativeMonitorPath,
+          monitorConfigPath,
+          launchAgentLabel,
+          launchAgentPlistName,
+          logPath,
+        });
+      }
+      result.monitorPath = managedMonitorPath;
+      result.monitorMode = "native-events-smappservice";
+      result.launchAgentPath = managedLaunchAgentPath;
+      if (runtime.manageLaunchAgent !== false) {
+        if (await pathExists(legacyLaunchAgentPath)) await removeExactTarget(legacyLaunchAgentPath);
+        const registration = startMacManagedMonitor({
+          label: launchAgentLabel,
+          managerPath: serviceManagerPath,
+        });
+        result.restartPersistence = registration.status;
+        result.requiresUserApproval = registration.status === "requires-approval";
+      } else {
+        result.restartPersistence = "not-registered-test-mode";
+      }
+    } else {
+      throw new Error("无法构建 macOS 重启启动服务。为保证重启后仍然生效，本工具不会再回退到只对当前登录会话有效的旧式 LaunchAgent；请先安装 Apple Command Line Tools（xcode-select --install）后重新运行 create");
+    }
     await createChromeAppShim({ config, chrome, appId: chromeAppId, shimPath: appPath, homeDirectory });
     await writeText(
       ownershipPath,
@@ -122,7 +170,6 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
     registerMacApp(appPath);
     result.dockItemRefreshed = await refreshExistingDockItem(appPath, chromeShimBundleId);
     if (result.desktopShortcut) await createDesktopSymlink(result.desktopShortcut, appPath, config.force);
-    if (runtime.manageLaunchAgent !== false) startMacMonitor(launchAgentLabel, launchAgentPath);
     return result;
   }
 
@@ -170,6 +217,41 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
 
   if (result.desktopShortcut) await createDesktopSymlink(result.desktopShortcut, appPath, config.force);
   return result;
+}
+
+export async function inspectMacRestartPersistence(config) {
+  const homeDirectory = config.homeDirectory || os.homedir();
+  const appKey = `${config.slug}-${config.instanceId.slice(0, 8)}`;
+  const stateDirectory = path.join(homeDirectory, "Library", "Application Support", "Oh My DeepSeek", "apps", appKey);
+  const label = `dev.ohmydeepseek.monitor.${config.instanceId}`;
+  const plistName = `${label}.plist`;
+  const serviceBundlePath = path.join(stateDirectory, "Oh My DeepSeek Background Launcher.app");
+  const managerPath = path.join(serviceBundlePath, "Contents", "MacOS", "service-manager");
+  const managedPlistPath = path.join(serviceBundlePath, "Contents", "Library", "LaunchAgents", plistName);
+  const legacyPlistPath = path.join(homeDirectory, "Library", "LaunchAgents", plistName);
+  const hasManagedService = await pathExists(managerPath) && await pathExists(managedPlistPath);
+  const hasLegacyService = await pathExists(legacyPlistPath);
+  if (!hasManagedService && !hasLegacyService) {
+    return { name: "重启后桌面启动", ok: true, detail: "尚未创建此入口；运行 create 后会安装并验证登录启动服务" };
+  }
+
+  const status = hasManagedService
+    ? readMacServiceStatus(managerPath)
+    : readLegacyMacServiceStatus(legacyPlistPath);
+  const launchService = readMacLaunchServiceState(label);
+  const loaded = launchService.loaded;
+  const ok = status === "enabled" && launchService.state === "running";
+  let detail;
+  if (ok) {
+    detail = `已启用并运行；macOS 会在后续登录时自动启动监视器（${label}）`;
+  } else if (status === "requires-approval") {
+    detail = "需要在 系统设置 → 通用 → 登录项与扩展 中允许 Oh My DeepSeek 后台运行";
+  } else if (status === "enabled") {
+    detail = `登录启动服务已授权但当前未正常运行：${label}（${launchService.state}）`;
+  } else {
+    detail = `登录启动服务状态异常：${status}`;
+  }
+  return { name: "重启后桌面启动", ok, detail, status, loaded, launchState: launchService.state };
 }
 
 async function findInstalledChromeAppId(config, homeDirectory, { appPath, ownershipPath, stateConfigPath }) {
@@ -395,7 +477,7 @@ function compileMacMonitor(sourcePath, binaryPath) {
   const sdk = spawnSync("/usr/bin/xcrun", ["--show-sdk-path"], { encoding: "utf8" });
   if (sdk.error || sdk.status !== 0 || !sdk.stdout.trim()) return false;
   const clangPath = located.stdout.trim();
-  const commonArguments = ["-isysroot", sdk.stdout.trim(), "-fobjc-arc", "-framework", "AppKit", "-framework", "Foundation", "-o", binaryPath, sourcePath];
+  const commonArguments = ["-isysroot", sdk.stdout.trim(), "-mmacosx-version-min=13.0", "-fobjc-arc", "-framework", "AppKit", "-framework", "Foundation", "-o", binaryPath, sourcePath];
   const architectures = process.arch === "arm64"
     ? [["-arch", "arm64", "-arch", "x86_64"], ["-arch", "arm64"]]
     : [["-arch", "x86_64", "-arch", "arm64"], ["-arch", "x86_64"]];
@@ -407,6 +489,147 @@ function compileMacMonitor(sourcePath, binaryPath) {
     }
   }
   return false;
+}
+
+function compileMacServiceManager(sourcePath, binaryPath) {
+  const located = spawnSync("/usr/bin/xcrun", ["--find", "clang"], { encoding: "utf8" });
+  if (located.error || located.status !== 0 || !located.stdout.trim()) return false;
+  const sdk = spawnSync("/usr/bin/xcrun", ["--show-sdk-path"], { encoding: "utf8" });
+  if (sdk.error || sdk.status !== 0 || !sdk.stdout.trim()) return false;
+  const clangPath = located.stdout.trim();
+  const commonArguments = [
+    "-isysroot", sdk.stdout.trim(),
+    "-mmacosx-version-min=13.0",
+    "-fobjc-arc",
+    "-framework", "Foundation",
+    "-framework", "ServiceManagement",
+    "-o", binaryPath,
+    sourcePath,
+  ];
+  const architectures = process.arch === "arm64"
+    ? [["-arch", "arm64", "-arch", "x86_64"], ["-arch", "arm64"]]
+    : [["-arch", "x86_64", "-arch", "arm64"], ["-arch", "x86_64"]];
+  for (const architectureArguments of architectures) {
+    const compiled = spawnSync(clangPath, [...architectureArguments, ...commonArguments], { encoding: "utf8" });
+    if (!compiled.error && compiled.status === 0) return true;
+  }
+  return false;
+}
+
+async function createMacManagedMonitorService({
+  config,
+  serviceBundlePath,
+  serviceManagerBinaryPath,
+  nativeMonitorPath,
+  monitorConfigPath,
+  launchAgentLabel,
+  launchAgentPlistName,
+  logPath,
+}) {
+  const stagingRoot = await mkdtemp(path.join(path.dirname(serviceBundlePath), ".background-launcher-"));
+  const stagedBundlePath = path.join(stagingRoot, path.basename(serviceBundlePath));
+  const managerPath = path.join(stagedBundlePath, "Contents", "MacOS", "service-manager");
+  const monitorPath = path.join(stagedBundlePath, "Contents", "MacOS", "monitor");
+  const launchAgentPath = path.join(stagedBundlePath, "Contents", "Library", "LaunchAgents", launchAgentPlistName);
+  const bundleIdentifier = `dev.ohmydeepseek.background-launcher.${config.instanceId}`;
+  try {
+    await writeText(
+      path.join(stagedBundlePath, "Contents", "Info.plist"),
+      renderMacServiceManagerInfo({ bundleIdentifier, name: config.name }),
+    );
+    await ensureDirectory(path.dirname(managerPath));
+    await copyFile(serviceManagerBinaryPath, managerPath);
+    await copyFile(nativeMonitorPath, monitorPath);
+    await chmod(managerPath, 0o755);
+    await chmod(monitorPath, 0o755);
+    await writeText(
+      launchAgentPath,
+      renderMacManagedLaunchAgent({ label: launchAgentLabel, monitorConfigPath, logPath }),
+    );
+    signMacApp(stagedBundlePath);
+    if (await pathExists(serviceBundlePath)) await removeExactTarget(serviceBundlePath);
+    await rename(stagedBundlePath, serviceBundlePath);
+  } finally {
+    if (await pathExists(stagingRoot)) await removeExactTarget(stagingRoot);
+  }
+}
+
+function unregisterMacManagedMonitor(managerPath) {
+  const status = readMacServiceStatus(managerPath);
+  if (status !== "enabled" && status !== "requires-approval") return;
+  const result = spawnSync(managerPath, ["unregister"], { encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    throw new Error(`无法更新 macOS 重启启动服务：${result.error?.message || result.stderr || result.stdout}`);
+  }
+}
+
+function startMacManagedMonitor({ label, managerPath }) {
+  let status = readMacServiceStatus(managerPath);
+  for (let attempt = 0; status !== "enabled" && attempt < 3; attempt += 1) {
+    const registered = spawnSync(managerPath, ["register"], { encoding: "utf8" });
+    status = parseMacServiceStatus(registered.stdout) ?? readMacServiceStatus(managerPath);
+    if (status !== "requires-approval" && (registered.error || registered.status !== 0)) {
+      throw new Error(`无法注册 macOS 重启启动服务：${registered.error?.message || registered.stderr || registered.stdout}`);
+    }
+    if (status === "requires-approval" && attempt < 2) {
+      spawnSync("/bin/sleep", ["0.25"], { stdio: "ignore" });
+      status = readMacServiceStatus(managerPath);
+    }
+  }
+  if (status !== "enabled" && status !== "requires-approval") {
+    throw new Error(`macOS 重启启动服务注册后状态异常：${status}`);
+  }
+  if (status === "enabled") {
+    const domain = `gui/${process.getuid()}`;
+    let kicked;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      kicked = spawnSync("/bin/launchctl", ["kickstart", "-k", `${domain}/${label}`], { encoding: "utf8" });
+      if (!kicked.error && kicked.status === 0) break;
+      spawnSync("/bin/sleep", ["0.1"], { stdio: "ignore" });
+    }
+    if (kicked.error || kicked.status !== 0) {
+      throw new Error(`macOS 重启启动服务已注册，但无法启动：${kicked.error?.message || kicked.stderr || kicked.stdout}`);
+    }
+    let launchState = readMacLaunchServiceState(label);
+    for (let attempt = 0; launchState.state !== "running" && attempt < 20; attempt += 1) {
+      spawnSync("/bin/sleep", ["0.1"], { stdio: "ignore" });
+      launchState = readMacLaunchServiceState(label);
+    }
+    if (launchState.state !== "running") {
+      throw new Error(`macOS 重启启动服务未能进入运行状态：${launchState.state}`);
+    }
+  } else if (status === "requires-approval") {
+    spawnSync(managerPath, ["open-settings"], { stdio: "ignore" });
+  }
+  return { status };
+}
+
+function readMacServiceStatus(managerPath) {
+  if (!managerPath) return "not-found";
+  const result = spawnSync(managerPath, ["status"], { encoding: "utf8" });
+  if (result.error) return "not-found";
+  return parseMacServiceStatus(result.stdout) ?? "unknown";
+}
+
+function parseMacServiceStatus(output) {
+  const statuses = new Set(["enabled", "requires-approval", "not-registered", "not-found"]);
+  return String(output).split(/\r?\n/).map((value) => value.trim()).find((value) => statuses.has(value)) ?? null;
+}
+
+function readMacLaunchServiceState(label) {
+  if (typeof process.getuid !== "function") return { loaded: false, state: "unsupported" };
+  const result = spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return { loaded: false, state: "not-loaded" };
+  const stateLine = String(result.stdout).split(/\r?\n/).find((line) => /^\s*state = /.test(line));
+  const state = stateLine?.match(/^\s*state = (.+?)\s*$/)?.[1] ?? "unknown";
+  const exitLine = String(result.stdout).split(/\r?\n/).find((line) => /^\s*last exit code = /.test(line));
+  return { loaded: true, state, lastExitCode: exitLine?.replace(/^\s*last exit code = /, "") ?? null };
+}
+
+function readLegacyMacServiceStatus(launchAgentPath) {
+  const source = `import Foundation; import ServiceManagement; let value = SMAppService.statusForLegacyPlist(at: URL(fileURLWithPath: ${JSON.stringify(launchAgentPath)})); switch value { case .enabled: print("enabled"); case .requiresApproval: print("requires-approval"); case .notRegistered: print("not-registered"); case .notFound: print("not-found"); @unknown default: print("unknown") }`;
+  const result = spawnSync("/usr/bin/xcrun", ["swift", "-e", source], { encoding: "utf8" });
+  return parseMacServiceStatus(result.stdout) ?? "legacy-session-only";
 }
 
 function registerMacApp(appPath) {

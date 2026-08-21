@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 import { normalizeCreateOptions } from "../src/config.mjs";
 import { createMacLauncher } from "../src/platform/macos.mjs";
 import { pathExists } from "../src/utils.mjs";
@@ -70,9 +71,18 @@ test("installs one canonical Chrome App with an idle launch monitor", { skip: pr
   assert.equal(result.appPath, result.chromeShimPath);
   assert.equal(result.usesLaunchMonitor, true);
   assert.match(await readFile(path.join(result.appPath, "Contents", "Info.plist"), "utf8"), /CrAppModeShortcutID/);
-  assert.equal(result.monitorMode, "native-events");
+  assert.equal(result.monitorMode, "native-events-smappservice");
   assert.equal(await pathExists(result.monitorPath), true);
   assert.match(await readFile(result.launchAgentPath, "utf8"), /<key>KeepAlive<\/key>/);
+  assert.match(await readFile(result.launchAgentPath, "utf8"), /<key>BundleProgram<\/key>/);
+  assert.match(result.launchAgentPath, /Oh My DeepSeek Background Launcher\.app\/Contents\/Library\/LaunchAgents/);
+  assert.equal(await pathExists(path.join(result.serviceBundlePath, "Contents", "MacOS", "service-manager")), true);
+  assert.equal(result.restartPersistence, "not-registered-test-mode");
+  for (const executable of [result.monitorPath, path.join(result.serviceBundlePath, "Contents", "MacOS", "service-manager")]) {
+    const buildVersion = spawnSync("/usr/bin/vtool", ["-show-build", executable], { encoding: "utf8" });
+    assert.equal(buildVersion.status, 0, buildVersion.stderr || buildVersion.stdout);
+    assert.match(buildVersion.stdout, /minos 13\.0/);
+  }
   const ownership = JSON.parse(await readFile(path.join(root, "Library", "Application Support", "Oh My DeepSeek", "apps", `${config.slug}-${config.instanceId.slice(0, 8)}`, "ownership.json"), "utf8"));
   assert.equal(ownership.appPath, result.appPath);
   assert.equal(ownership.chromeAppId, appId);

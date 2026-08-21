@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
-import { createWslLauncher, findInstalledWindowsWebApp, parseSimpleServiceCommand, resolveDirectWslService, warmDirectServiceCompileCache } from "../src/platform/wsl.mjs";
+import { createWslLauncher, findInstalledWindowsWebApp, inspectWslRestartPersistence, parseSimpleServiceCommand, resolveDirectWslService, warmDirectServiceCompileCache } from "../src/platform/wsl.mjs";
 import { pathExists } from "../src/utils.mjs";
 
 test("creates a Windows shortcut payload while keeping the supervisor in WSL", async () => {
@@ -54,6 +54,14 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
       mkdirSync(path.dirname(target), { recursive: true });
       writeFileSync(target, JSON.stringify(options));
     },
+    inspectShortcut({ shortcutPath }) {
+      try {
+        const value = JSON.parse(requireShortcut(shortcutPath));
+        return { targetPath: value.launcherPath, arguments: "" };
+      } catch {
+        return null;
+      }
+    },
     compileNativeLauncher({ outputPathWsl }) {
       writeFileSync(outputPathWsl, "native launcher placeholder");
     },
@@ -64,7 +72,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
       };
     },
     createStartupMonitor({ monitorPath, shortcutPath }) {
-      writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ monitorPath }));
+      writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ launcherPath: monitorPath }));
     },
     resolveDirectService() {
       return {
@@ -74,6 +82,9 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
       };
     },
   };
+  function requireShortcut(shortcutPath) {
+    return readFileSync(toLocalPath(shortcutPath), "utf8");
+  }
   const profileRoot = toLocalPath(String.raw`C:\Users\tester\AppData\Local\Google\Chrome\User Data\Default`);
   await mkdir(path.join(profileRoot, "Web Applications", "Manifest Resources", installedAppId), { recursive: true });
   await mkdir(path.join(profileRoot, "Sync Data", "LevelDB"), { recursive: true });
@@ -84,6 +95,9 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   const legacyWarmStartShortcut = toLocalPath(String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\WSL Harness (WSL Warm Start).lnk`);
   await mkdir(path.dirname(legacyWarmStartShortcut), { recursive: true });
   await writeFile(legacyWarmStartShortcut, "legacy warm start");
+  const windowsWslExecutable = toLocalPath(String.raw`C:\Windows\System32\wsl.exe`);
+  await mkdir(path.dirname(windowsWslExecutable), { recursive: true });
+  await writeFile(windowsWslExecutable, "wsl executable placeholder");
 
   const result = await createWslLauncher(
     config,
@@ -146,7 +160,14 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(result.usesOfficialPwaEntry, true);
   assert.equal(result.officialPwaAppUserModelId, officialPwaAppUserModelId);
   assert.equal(result.appUserModelId, appUserModelId);
+  assert.equal(result.restartPersistence, "shortcut-and-login-monitor");
+  const monitorStartupShortcut = toLocalPath(String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\WSL Harness Monitor.lnk`);
+  assert.equal(await pathExists(monitorStartupShortcut), true);
   assert.equal(await pathExists(legacyWarmStartShortcut), false);
+
+  const persistence = await inspectWslRestartPersistence(config, interop);
+  assert.equal(persistence.ok, true, persistence.detail);
+  assert.match(persistence.detail, /Windows 登录监视器/);
 });
 
 test("parses only service commands that are safe to execute without a shell", () => {

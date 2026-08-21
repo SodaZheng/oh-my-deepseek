@@ -32,6 +32,7 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.js")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "supervisor.mjs")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "window-state.ps1")), true);
+  assert.equal(result.restartPersistence, "shortcut-on-disk");
   const hiddenLauncher = await readFile(path.join(result.supportDirectory, "launcher.js"), "utf8");
   assert.notEqual(hiddenLauncher.charCodeAt(0), 0xfeff);
   assert.equal(/[^\x00-\x7f]/.test(hiddenLauncher), false);

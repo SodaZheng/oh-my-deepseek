@@ -78,6 +78,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     serviceCommand: config.serviceCommand,
     workingDirectory: config.workingDirectory,
     logPath,
+    restartPersistence: usesOfficialPwaEntry ? "shortcut-and-login-monitor" : "shortcut-on-disk",
   };
   if (config.dryRun) return { ...result, dryRun: true };
 
@@ -242,7 +243,102 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   if (legacyStartupShortcutPathWsl && await pathExists(legacyStartupShortcutPathWsl)) {
     await removeExactTarget(legacyStartupShortcutPathWsl);
   }
+  const persistence = await inspectWslRestartPersistence(config, interop);
+  if (!persistence.ok) throw new Error(`Windows/WSL 重启启动链验证失败：${persistence.detail}`);
   return result;
+}
+
+export async function inspectWslRestartPersistence(config, interop = defaultInterop) {
+  let windowsEnvironment;
+  try {
+    windowsEnvironment = interop.getWindowsEnvironment();
+  } catch (error) {
+    return { name: "重启后桌面启动", ok: false, detail: `无法读取 Windows 登录目录：${error.message}` };
+  }
+  const appKey = `${config.slug}-${config.instanceId.slice(0, 8)}`;
+  const supportDirectory = path.join(config.homeDirectory, ".local", "share", "oh-my-deepseek", "apps", appKey);
+  const hostSupportDirectory = path.win32.join(windowsEnvironment.localAppData, "Oh My DeepSeek", "wsl-apps", appKey);
+  const hostSupportDirectoryWsl = interop.toWslPath(hostSupportDirectory);
+  const shortcutDirectory = config.output ? interop.toWindowsPath(config.output) : windowsEnvironment.desktop;
+  const shortcutPath = path.win32.join(shortcutDirectory, `${config.name}.lnk`);
+  const shortcutPathWsl = interop.toWslPath(shortcutPath);
+  const startMenuShortcutPath = path.win32.join(windowsEnvironment.programs, "Oh My DeepSeek", `${config.name}.lnk`);
+  const startMenuShortcutPathWsl = interop.toWslPath(startMenuShortcutPath);
+  const requiredPaths = [
+    path.join(supportDirectory, "config.json"),
+    path.join(supportDirectory, "supervisor.mjs"),
+    path.join(hostSupportDirectoryWsl, "launcher.exe"),
+    path.join(hostSupportDirectoryWsl, "browser-host.ps1"),
+    path.join(hostSupportDirectoryWsl, "browser-config.json"),
+    shortcutPathWsl,
+    startMenuShortcutPathWsl,
+  ];
+  const existence = await Promise.all(requiredPaths.map(pathExists));
+  if (!existence.some(Boolean)) {
+    return { name: "重启后桌面启动", ok: true, detail: "尚未创建此入口；create 后会把 Windows/WSL 冷启动链完整落盘" };
+  }
+  if (!existence.every(Boolean)) {
+    const missing = requiredPaths.filter((_, index) => !existence[index]);
+    return { name: "重启后桌面启动", ok: false, detail: `Windows/WSL 启动产物不完整：缺少 ${missing.join("、")}` };
+  }
+
+  let storedConfig;
+  let browserConfig;
+  let launchConfig;
+  try {
+    [storedConfig, browserConfig, launchConfig] = await Promise.all([
+      readFile(path.join(supportDirectory, "config.json"), "utf8").then(JSON.parse),
+      readFile(path.join(hostSupportDirectoryWsl, "browser-config.json"), "utf8").then(JSON.parse),
+      readFile(path.join(hostSupportDirectoryWsl, "wsl-launch.json"), "utf8").then(JSON.parse),
+    ]);
+  } catch (error) {
+    return { name: "重启后桌面启动", ok: false, detail: `无法读取 Windows/WSL 启动配置：${error.message}` };
+  }
+  if (!(await pathExists(storedConfig.nodePath))) {
+    return { name: "重启后桌面启动", ok: false, detail: `WSL 启动器保存的 Node.js 已不存在：${storedConfig.nodePath}` };
+  }
+  const wslExecutablePath = interop.toWslPath(launchConfig.wslPath);
+  if (!(await pathExists(wslExecutablePath))) {
+    return { name: "重启后桌面启动", ok: false, detail: `Windows WSL 启动器已不存在：${launchConfig.wslPath}` };
+  }
+
+  if (browserConfig.launchMode === "installed-pwa") {
+    const monitorPaths = [
+      path.join(hostSupportDirectoryWsl, "pwa-monitor.exe"),
+      interop.toWslPath(path.win32.join(windowsEnvironment.startup, `${config.name} Monitor.lnk`)),
+    ];
+    const monitorExistence = await Promise.all(monitorPaths.map(pathExists));
+    if (!monitorExistence.every(Boolean)) {
+      const missing = monitorPaths.filter((_, index) => !monitorExistence[index]);
+      return { name: "重启后桌面启动", ok: false, detail: `Windows 登录后的 PWA 接管监视器不完整：缺少 ${missing.join("、")}` };
+    }
+  }
+
+  if (interop.inspectShortcut) {
+    const expectedLauncher = path.win32.join(hostSupportDirectory, "launcher.exe");
+    for (const candidate of [shortcutPath, startMenuShortcutPath]) {
+      const inspected = interop.inspectShortcut({ shortcutPath: candidate });
+      if (!inspected || !windowsPathsEqual(inspected.targetPath, expectedLauncher)) {
+        return { name: "重启后桌面启动", ok: false, detail: `Windows 快捷方式目标无效：${candidate}` };
+      }
+    }
+    if (browserConfig.launchMode === "installed-pwa") {
+      const startupShortcutPath = path.win32.join(windowsEnvironment.startup, `${config.name} Monitor.lnk`);
+      const inspected = interop.inspectShortcut({ shortcutPath: startupShortcutPath });
+      const expectedMonitor = path.win32.join(hostSupportDirectory, "pwa-monitor.exe");
+      if (!inspected || !windowsPathsEqual(inspected.targetPath, expectedMonitor)) {
+        return { name: "重启后桌面启动", ok: false, detail: `Windows 登录监视器快捷方式目标无效：${startupShortcutPath}` };
+      }
+    }
+  }
+
+  return {
+    name: "重启后桌面启动",
+    ok: true,
+    detail: browserConfig.launchMode === "installed-pwa"
+      ? `桌面/开始菜单入口及 Windows 登录监视器均已落盘：${shortcutPath}`
+      : `桌面/开始菜单入口可直接冷启动 WSL：${shortcutPath}`,
+  };
 }
 
 const defaultInterop = {
@@ -297,6 +393,17 @@ $Value = @{
     );
     if (result.error || result.status !== 0) {
       throw new Error(`无法创建 Windows 启动快捷方式：${formatCommandError(result)}`);
+    }
+  },
+  inspectShortcut({ shortcutPath }) {
+    const script = `$Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut(${powershellSingleQuote(shortcutPath)}); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::Write((@{ targetPath = [string]$Shortcut.TargetPath; arguments = [string]$Shortcut.Arguments } | ConvertTo-Json -Compress))`;
+    const result = runPowerShell(script);
+    if (result.error || result.status !== 0 || !result.stdout.trim()) return null;
+    try {
+      const value = JSON.parse(result.stdout.trim());
+      return value.targetPath ? value : null;
+    } catch {
+      return null;
     }
   },
   compileNativeLauncher({ sourcePath, outputPath }) {
@@ -354,6 +461,10 @@ function formatCommandError(result) {
 
 function withUtf8Bom(contents) {
   return `\uFEFF${contents}`;
+}
+
+function windowsPathsEqual(left, right) {
+  return String(left).replaceAll("/", "\\").toLowerCase() === String(right).replaceAll("/", "\\").toLowerCase();
 }
 
 export function findPwaShortcutIdentity({ installedWebApp, windowsEnvironment }) {

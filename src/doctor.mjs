@@ -1,5 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { findChrome } from "./chrome.mjs";
+import { inspectMacRestartPersistence } from "./platform/macos.mjs";
+import { inspectWindowsRestartPersistence } from "./platform/windows.mjs";
+import { inspectWslRestartPersistence } from "./platform/wsl.mjs";
 
 export async function runDoctor(config) {
   const checks = [];
@@ -14,6 +17,9 @@ export async function runDoctor(config) {
   checks.push(commandCheck);
   if (config.platform === "wsl") checks.push(checkWslInterop(config));
   checks.push({ name: "Node.js", ok: true, detail: process.version });
+  if (config.platform === "darwin") checks.push(await inspectMacRestartPersistence(config));
+  else if (config.platform === "wsl") checks.push(await inspectWslRestartPersistence(config));
+  else checks.push(await inspectWindowsRestartPersistence(config));
   return { platform: config.platform, checks, ok: checks.every((check) => check.ok) };
 }
 

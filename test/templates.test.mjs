@@ -3,6 +3,7 @@ import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
 import { renderMacInfoPlist, renderMacLaunchAgent, renderMacLauncher, renderMacMonitor } from "../src/templates/macos.mjs";
 import { renderMacNativeMonitorSource } from "../src/templates/macos-native-monitor.mjs";
+import { renderMacManagedLaunchAgent, renderMacServiceManagerInfo, renderMacServiceManagerSource } from "../src/templates/macos-service-manager.mjs";
 import { renderSupervisor } from "../src/templates/supervisor.mjs";
 import { renderWindowsHiddenLauncher, renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource, renderWindowsShortcutScript } from "../src/templates/windows.mjs";
 import { renderWindowsWindowState } from "../src/templates/windows-window-state.mjs";
@@ -57,6 +58,25 @@ test("macOS monitor and LaunchAgent templates stay invisible while supervising c
   assert.match(launchAgent, /<string>Background<\/string>/);
   assert.match(launchAgent, /<string>Aqua<\/string>/);
   assert.match(launchAgent, /\/opt\/node &amp; tools\/bin\/node/);
+
+  const managedLaunchAgent = renderMacManagedLaunchAgent({
+    label: "dev.ohmydeepseek.monitor.test",
+    monitorConfigPath: "/tmp/config & state.json",
+    logPath: "/tmp/monitor.log",
+  });
+  const managerInfo = renderMacServiceManagerInfo({
+    bundleIdentifier: "dev.ohmydeepseek.background-launcher.test",
+    name: "Test Harness",
+  });
+  const managerSource = renderMacServiceManagerSource({ launchAgentPlistName: "dev.ohmydeepseek.monitor.test.plist" });
+  assert.match(managedLaunchAgent, /<key>BundleProgram<\/key>/);
+  assert.match(managedLaunchAgent, /Contents\/MacOS\/monitor/);
+  assert.match(managedLaunchAgent, /config &amp; state\.json/);
+  assert.match(managerInfo, /LSBackgroundOnly/);
+  assert.match(managerInfo, /dev\.ohmydeepseek\.background-launcher\.test/);
+  assert.match(managerSource, /SMAppService/);
+  assert.match(managerSource, /agentServiceWithPlistName/);
+  assert.match(managerSource, /requires-approval/);
 });
 
 test("Windows templates run a hidden lifecycle supervisor", () => {

@@ -69,6 +69,11 @@ function printCreateResult(result, asJson) {
     if (result.usesChromeShim) {
       process.stdout.write(`Chrome App Shim：${result.chromeShimPath}\n`);
       process.stdout.write(`按需启动监视器（${result.monitorMode}）：${result.launchAgentPath}\n`);
+      if (result.requiresUserApproval) {
+        process.stdout.write("需要一次授权：请在 系统设置 → 通用 → 登录项与扩展 中允许 Oh My DeepSeek 后台运行；授权后重启仍会自动生效。\n");
+      } else if (result.restartPersistence === "enabled") {
+        process.stdout.write("重启持久性：已启用，后续登录会自动启动按需监视器。\n");
+      }
     }
     else process.stdout.write("提示：未检测到该 URL 的已安装 Chrome Web App，将使用直接 Chrome 模式，Dock 显示 Chrome 图标。\n");
   } else if (result.platform === "wsl") {
@@ -88,9 +93,11 @@ function printCreateResult(result, asJson) {
       ? `Windows 启动入口：自有快捷方式/任务栏身份 + Chrome 官方 PWA/Profile\n`
       : `Windows 启动入口：原生无控制台 launcher.exe（无 WScript）\n`);
     process.stdout.write(`WSL 服务启动：${result.serviceLaunchMode === "direct" ? "直接执行（无常驻）" : "登录 shell 兼容模式"}\n`);
+    process.stdout.write(`重启持久性：${result.usesOfficialPwaEntry ? "桌面/开始菜单入口 + Windows 登录 PWA 监视器" : "桌面/开始菜单冷启动入口"}\n`);
   } else {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
     process.stdout.write(`启动文件目录：${result.supportDirectory}\n`);
+    process.stdout.write("重启持久性：快捷方式和启动依赖已保存到本机。\n");
   }
   process.stdout.write(`服务命令：${result.serviceCommand}\n`);
   process.stdout.write(`Chrome App：${result.url}\n`);
@@ -110,7 +117,7 @@ function renderHelp(command) {
   if (command === "doctor") {
     return `oh-my-deepseek doctor [选项]
 
-检查 Chrome、服务命令和 Node.js 环境。
+检查 Chrome、服务命令、Node.js，以及重启后的桌面启动链。
 
 常用选项：
   --command, -c <命令>   要检查的服务命令，默认 dsh web --no-open

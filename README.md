@@ -25,6 +25,7 @@ npm install
 npm link
 oh-my-deepseek doctor
 oh-my-deepseek create
+oh-my-deepseek doctor
 ```
 
 默认配置：
@@ -42,11 +43,13 @@ macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.ap
 
 如果找不到 Chrome 官方 PWA 快捷方式，才回退到原生 `launcher.exe` 入口。两条路径都不再经过 Windows Script Host。生成入口时工具会提前解析 `dsh` 等简单服务命令的绝对可执行路径和参数；点击时监督器直接执行该入口，跳过交互式登录 shell、启动脚本和重复的命令发现。宿主机无需重复安装 Node.js 或 DSH，也不会安装常驻预热进程。
 
-macOS 会优先检测当前 Chrome 配置中已安装的 Web App，并使用 Chrome 官方 `app_mode_loader` 生成唯一的可见 App。一个由 `launchd` 管理的无界面原生监视器通过 `NSWorkspace.runningApplications` 事件在登录期间等待点击，不做进程轮询：冷启动时先关闭尚未就绪的首次窗口，启动服务，等待页面就绪，再重新打开同一个 App。监视器本身不启动或常驻业务服务；关闭 App 后会定位并停止所有监听配置端口的进程。
+macOS 会优先检测当前 Chrome 配置中已安装的 Web App，并使用 Chrome 官方 `app_mode_loader` 生成唯一的可见 App。一个由 `SMAppService` 正式注册、由 `launchd` 管理的无界面原生监视器通过 `NSWorkspace.runningApplications` 事件在登录期间等待点击，不做进程轮询：冷启动时先关闭尚未就绪的首次窗口，启动服务，等待页面就绪，再重新打开同一个 App。这个 LaunchAgent 内嵌在签名的辅助 App 中，系统会在后续每次登录时自动加载，而不是只对执行 `create` 的当前会话临时生效。监视器本身不启动或常驻业务服务；关闭 App 后会定位并停止所有监听配置端口的进程。
+
+macOS 13 及以上会让用户控制后台项目。第一次创建或系统撤销授权后，工具会打开“系统设置 → 通用 → 登录项与扩展”，需要允许 `DeepSeek Harness Background Launcher` 后台运行一次；这是系统授权，工具不会绕过。授权状态会持久保存，后续重启不需要重新运行 `create`。`oh-my-deepseek doctor` 会同时检查授权状态和当前 LaunchAgent 是否已加载。
 
 如果新版 Chrome 不再提供旧的 URL→App ID 索引，macOS 生成器会校验并复用既有 `ownership.json`、Shim 配置和 Chrome Manifest Resources 中保存的 App ID。已存在的官方 Shim 不会因为一次启发式检测失败就被降级覆盖成普通 launcher；关联资源无法验证时会停止创建并提示重新安装 PWA。
 
-创建时如果本机可用 Apple Command Line Tools，工具会现场编译并临时签名 universal 原生监视器；如果不可用，则自动回退到兼容的 Node.js 监视器，不影响 App 创建。
+创建时工具会使用 Apple Command Line Tools 现场编译、以 macOS 13 为最低目标并临时签名 universal 原生监视器和 `SMAppService` 管理器。为了兑现“重启后仍然生效”，如果既没有可复用的已安装管理器、也无法完成本次编译，`create` 会明确失败并提示先运行 `xcode-select --install`，不会再静默回退到只对当前登录会话有效的旧式 LaunchAgent。
 
 因为启动和运行始终是 `~/Applications` 中的同一个 Chrome App Shim，Dock 只显示一个图标。它继续复用系统 Google Chrome，Cookie 和登录状态保持普通 Chrome 行为，也不会触发自定义 Runtime 的 Safe Storage 授权。首次冷启动可能有一次很短的图标弹跳。
 
@@ -74,7 +77,7 @@ WSL 创建入口时会扫描 Windows Chrome 的 `Default` 和 `Profile N`，按�
 
 更新已有入口后，先取消固定旧的 Chrome PWA 图标，再运行一次新生成的桌面或开始菜单入口，并从这个正在运行的 App 图标重新固定。旧固定项仍绑定 `Chrome._crx_...`，不会自动迁移到新的专属 AppUserModelID；这次需要手动取消一次，之后重新运行 `create` 不再需要反复固定。
 
-Windows 宿主浏览器桥接器只在 App 窗口运行期间存在。PWA 模式使用窗口句柄状态；URL 回退模式复用单个 HTTP 客户端与 Chrome 进程对象。空闲状态不安装常驻 Windows 服务、WSL 守护进程或预热任务。
+Windows 宿主浏览器桥接器只在 App 窗口运行期间存在。PWA 模式使用窗口句柄状态；URL 回退模式复用单个 HTTP 客户端与 Chrome 进程对象。WSL/DSH 不会在登录时预热或常驻。检测到官方 PWA 时，只有轻量的 Windows 窗口事件监视器会通过“启动”目录在每次登录后自动恢复，用于接管用户直接点击 Chrome 官方 PWA 的冷启动；主桌面和开始菜单入口本身始终可以从磁盘直接冷启动 WSL。
 
 Windows/WSL 启动入口会记录真实 App 窗口的外层宽高；下次启动时恢复该宽高，并在 Chrome 选中的当前显示器可用区域内居中。窗口尺寸记录独立保存在本入口的 Windows 状态目录中，不依赖 Chrome 对内容区域尺寸的换算，因此不会因为标题栏、边框或任务栏产生二次启动尺寸偏差；如果显示器分辨率变小，尺寸会自动收敛到可用区域内。
 
@@ -140,7 +143,15 @@ WSL 的常规 PWA 链路为：自有桌面/开始菜单快捷方式 → 无控�
 - Windows：`%LOCALAPPDATA%\Oh My DeepSeek\logs\<应用名>.log`
 - WSL：`~/.local/state/oh-my-deepseek/logs/<应用名>.log`
 
-macOS 的无界面监视器由 `~/Library/LaunchAgents/dev.ohmydeepseek.monitor.<实例 ID>.plist` 管理；详细状态与服务输出共用上述日志。原生监视器只响应应用列表变化，空闲时不会执行 `ps` 或 TCP 轮询。
+macOS 的无界面监视器使用 App 内嵌的 `Contents/Library/LaunchAgents/dev.ohmydeepseek.monitor.<实例 ID>.plist`，并由 `SMAppService` 注册；旧的 `~/Library/LaunchAgents` 入口会在升级时移除。详细状态与服务输出共用上述日志。原生监视器只响应应用列表变化，空闲时不会执行 `ps` 或 TCP 轮询。
+
+三端的重启持久性不同，但验收行为一致：
+
+- macOS：登录时由 `SMAppService` 恢复按需监视器，双击官方 Chrome App Shim 后再启动 DSH。
+- Windows：桌面 `.lnk`、`launcher.js`、监督器和绝对 Node.js 路径全部落盘，双击时直接冷启动，不依赖重启前的进程。
+- WSL：Windows 桌面/开始菜单 `.lnk`、原生 `launcher.exe` 和 WSL 内监督器全部落盘；官方 PWA 事件监视器另由 Windows“启动”目录恢复。
+
+运行 `oh-my-deepseek doctor` 可以检查当前平台的这些最终生成产物；入口尚未创建时该项仅提示，入口部分丢失、后台授权被撤销或保存的运行时路径失效时会返回失败。
 
 ## 开发与验证
 
