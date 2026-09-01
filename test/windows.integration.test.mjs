@@ -27,6 +27,7 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
     { LOCALAPPDATA: path.join(root, "LocalAppData"), USERPROFILE: root },
   );
 
+  assert.equal(result.replacedExisting, false);
   assert.equal(await pathExists(result.shortcutPath), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.ps1")), false);
   assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.js")), true);
@@ -208,4 +209,14 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
     { encoding: "utf8", windowsHide: true },
   );
   assert.equal(monitorCompile.status, 0, monitorCompile.stderr || monitorCompile.stdout);
+
+  const staleSupportFile = path.join(result.supportDirectory, "stale-generated-file.txt");
+  await writeFile(staleSupportFile, "old launcher payload");
+  const recreated = await createWindowsLauncher(
+    config,
+    { executable: fakeChrome, icon: fakeChrome },
+    { LOCALAPPDATA: path.join(root, "LocalAppData"), USERPROFILE: root },
+  );
+  assert.equal(recreated.replacedExisting, true);
+  assert.equal(await pathExists(staleSupportFile), false);
 });

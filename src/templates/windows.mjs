@@ -112,6 +112,7 @@ internal static class OhMyDeepSeekLauncher {
 export function renderWindowsPwaMonitorSource({ appUserModelId, launcherPath, windowHandlePath, monitorId }) {
   const encoded = (value) => Buffer.from(String(value), "utf8").toString("base64");
   return `using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -120,14 +121,17 @@ using System.Threading;
 using System.Threading.Tasks;
 
 internal static class OhMyDeepSeekPwaMonitor {
+  private const uint EventObjectCreate = 0x8000;
   private const uint EventObjectShow = 0x8002;
   private const uint WineventOutOfContext = 0;
   private const uint WineventSkipOwnProcess = 2;
   private const uint WmClose = 0x0010;
+  private const int DwmwaCloak = 13;
   private static readonly string ExpectedAppId = Decode("${encoded(appUserModelId)}");
   private static readonly string LauncherPath = Decode("${encoded(launcherPath)}");
   private static readonly string WindowHandlePath = Decode("${encoded(windowHandlePath)}");
   private static readonly string MutexName = "Local\\\\OhMyDeepSeek.PwaMonitor." + Decode("${encoded(monitorId)}");
+  private static readonly ConcurrentDictionary<long, byte> candidates = new ConcurrentDictionary<long, byte>();
   private static WinEventDelegate callback;
   private static int handling;
 
@@ -172,19 +176,20 @@ internal static class OhMyDeepSeekPwaMonitor {
   [DllImport("user32.dll")] private static extern bool UnhookWinEvent(IntPtr hook);
   [DllImport("user32.dll")] private static extern int GetMessage(out Message message, IntPtr window, uint min, uint max);
   [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
-  [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
   [DllImport("user32.dll")] private static extern int GetClassName(IntPtr window, StringBuilder value, int count);
   [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
   [DllImport("shell32.dll")] private static extern int SHGetPropertyStoreForWindow(IntPtr window, ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore propertyStore);
   [DllImport("ole32.dll")] private static extern int PropVariantClear(ref PropVariant value);
+  [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
 
   [STAThread]
   private static int Main() {
     bool created;
     using (var mutex = new Mutex(true, MutexName, out created)) {
       if (!created) return 0;
-      callback = OnWindowShown;
-      var hook = SetWinEventHook(EventObjectShow, EventObjectShow, IntPtr.Zero, callback, 0, 0, WineventOutOfContext | WineventSkipOwnProcess);
+      callback = OnWindowEvent;
+      var hook = SetWinEventHook(EventObjectCreate, EventObjectShow, IntPtr.Zero, callback, 0, 0, WineventOutOfContext | WineventSkipOwnProcess);
       if (hook == IntPtr.Zero) return 1;
       try {
         Message message;
@@ -196,30 +201,59 @@ internal static class OhMyDeepSeekPwaMonitor {
     return 0;
   }
 
-  private static void OnWindowShown(IntPtr hook, uint eventType, IntPtr window, int objectId, int childId, uint threadId, uint eventTime) {
-    if (objectId != 0 || childId != 0 || !IsWindowVisible(window) || File.Exists(WindowHandlePath)) return;
+  private static void OnWindowEvent(IntPtr hook, uint eventType, IntPtr window, int objectId, int childId, uint threadId, uint eventTime) {
+    if (eventType != EventObjectCreate && eventType != EventObjectShow) return;
+    if (objectId != 0 || childId != 0 || File.Exists(WindowHandlePath)) return;
     var className = new StringBuilder(256);
     GetClassName(window, className, className.Capacity);
     if (!className.ToString().StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal)) return;
+    if (!candidates.TryAdd(window.ToInt64(), 0)) return;
+    SetWindowCloaked(window, true);
+    ShowWindow(window, 0);
     Task.Run(() => InspectWindow(window));
   }
 
   private static void InspectWindow(IntPtr window) {
-    for (var attempt = 0; attempt < 20 && IsWindow(window); attempt += 1) {
-      if (File.Exists(WindowHandlePath)) return;
-      if (string.Equals(ReadAppUserModelId(window), ExpectedAppId, StringComparison.OrdinalIgnoreCase)) {
-        if (Interlocked.CompareExchange(ref handling, 1, 0) == 0) InterceptAndLaunch(window);
-        return;
+    try {
+      for (var attempt = 0; attempt < 40 && IsWindow(window); attempt += 1) {
+        if (File.Exists(WindowHandlePath)) {
+          RestoreRejectedWindow(window);
+          return;
+        }
+        var appId = ReadAppUserModelId(window);
+        if (string.Equals(appId, ExpectedAppId, StringComparison.OrdinalIgnoreCase)) {
+          if (Interlocked.CompareExchange(ref handling, 1, 0) == 0) {
+            InterceptAndLaunch(window);
+          } else {
+            PostMessage(window, WmClose, IntPtr.Zero, IntPtr.Zero);
+          }
+          return;
+        }
+        if (!string.IsNullOrWhiteSpace(appId)) {
+          RestoreRejectedWindow(window);
+          return;
+        }
+        Thread.Sleep(10);
       }
-      Thread.Sleep(50);
+      RestoreRejectedWindow(window);
+    } finally {
+      byte ignored;
+      candidates.TryRemove(window.ToInt64(), out ignored);
     }
   }
 
   private static void InterceptAndLaunch(IntPtr window) {
     try {
+      SetWindowCloaked(window, true);
+      ShowWindow(window, 0);
       PostMessage(window, WmClose, IntPtr.Zero, IntPtr.Zero);
       var deadline = DateTime.UtcNow.AddSeconds(3);
       while (IsWindow(window) && DateTime.UtcNow < deadline) Thread.Sleep(50);
+      if (IsWindow(window)) {
+        SetWindowCloaked(window, false);
+        ShowWindow(window, 9);
+        return;
+      }
       var startInfo = new ProcessStartInfo {
         FileName = LauncherPath,
         WorkingDirectory = Path.GetDirectoryName(LauncherPath),
@@ -234,6 +268,17 @@ internal static class OhMyDeepSeekPwaMonitor {
     } finally {
       Interlocked.Exchange(ref handling, 0);
     }
+  }
+
+  private static void SetWindowCloaked(IntPtr window, bool cloaked) {
+    var value = cloaked ? 1 : 0;
+    DwmSetWindowAttribute(window, DwmwaCloak, ref value, sizeof(int));
+  }
+
+  private static void RestoreRejectedWindow(IntPtr window) {
+    if (!IsWindow(window)) return;
+    SetWindowCloaked(window, false);
+    ShowWindow(window, 9);
   }
 
   private static string ReadAppUserModelId(IntPtr window) {

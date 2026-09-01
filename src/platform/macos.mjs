@@ -40,6 +40,10 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
   const serviceManagerPath = path.join(serviceBundlePath, "Contents", "MacOS", "service-manager");
   const managedMonitorPath = path.join(serviceBundlePath, "Contents", "MacOS", "monitor");
   const managedLaunchAgentPath = path.join(serviceBundlePath, "Contents", "Library", "LaunchAgents", launchAgentPlistName);
+  const appExists = await pathExists(appPath);
+  const desktopShortcutExists = config.desktop && desktopPath !== appPath
+    ? await pathEntryExists(desktopPath)
+    : false;
   const result = {
     platform: "darwin",
     appPath,
@@ -59,10 +63,14 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
     serviceCommand: config.serviceCommand,
     workingDirectory: config.workingDirectory,
     logPath,
+    replacedExisting: appExists || desktopShortcutExists,
   };
 
   if (config.dryRun) return { ...result, dryRun: true };
   await assertReplaceableMacApp(appPath, config.force, { ownershipPath, chromeAppId });
+  if (result.desktopShortcut) {
+    await assertReplaceableMacDesktopShortcut(result.desktopShortcut, appPath, config.force);
+  }
   await assertSupervisorNotRunning(path.join(stateDirectory, "supervisor.lock"));
   if (chrome.icon && !(await pathExists(chrome.icon))) throw new Error(`图标文件不存在：${chrome.icon}`);
 
@@ -161,6 +169,7 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
     } else {
       throw new Error("无法构建 macOS 重启启动服务。为保证重启后仍然生效，本工具不会再回退到只对当前登录会话有效的旧式 LaunchAgent；请先安装 Apple Command Line Tools（xcode-select --install）后重新运行 create");
     }
+    await destroyMacVisibleLauncher({ appPath, desktopShortcut: result.desktopShortcut });
     await createChromeAppShim({ config, chrome, appId: chromeAppId, shimPath: appPath, homeDirectory });
     await writeText(
       ownershipPath,
@@ -209,7 +218,7 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
     );
     if (chrome.icon) await copyFile(chrome.icon, path.join(resourcesDirectory, "app.icns"));
     signMacApp(stagedApp);
-    if (await pathExists(appPath)) await removeExactTarget(appPath);
+    await destroyMacVisibleLauncher({ appPath, desktopShortcut: result.desktopShortcut });
     await rename(stagedApp, appPath);
   } finally {
     if (await pathExists(stagingRoot)) await removeExactTarget(stagingRoot);
@@ -451,6 +460,41 @@ async function assertReplaceableMacApp(appPath, force, { ownershipPath, chromeAp
     } catch {}
   }
   if (!owned && !force) throw new Error(`目标已存在且不是本工具生成：${appPath}。确认可覆盖后请加 --force`);
+}
+
+async function assertReplaceableMacDesktopShortcut(shortcutPath, appPath, force) {
+  let stat = null;
+  try { stat = await lstat(shortcutPath); } catch (error) { if (!error || error.code !== "ENOENT") throw error; }
+  if (!stat) return;
+  let owned = false;
+  if (stat.isSymbolicLink()) {
+    try {
+      owned = path.resolve(path.dirname(shortcutPath), await readlink(shortcutPath)) === appPath;
+    } catch {}
+  }
+  if (!owned && !force) {
+    throw new Error(`桌面入口已存在且不是本工具生成：${shortcutPath}。确认可覆盖后请加 --force`);
+  }
+}
+
+async function destroyMacVisibleLauncher({ appPath, desktopShortcut }) {
+  if (desktopShortcut && await pathEntryExists(desktopShortcut)) {
+    await removeExactTarget(desktopShortcut);
+  }
+  if (await pathExists(appPath)) {
+    unregisterMacApp(appPath);
+    await removeExactTarget(appPath);
+  }
+}
+
+async function pathEntryExists(target) {
+  try {
+    await lstat(target);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function stopMacMonitor(label) {

@@ -20,6 +20,8 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
   const logPath = path.join(localAppData, "Oh My DeepSeek", "logs", `${config.slug}.log`);
   const shortcutDirectory = config.output ?? getWindowsDesktopDirectory(env);
   const shortcutPath = path.join(shortcutDirectory, `${config.name}.lnk`);
+  const supportExists = await pathExists(supportDirectory);
+  const shortcutExists = await pathExists(shortcutPath);
   const result = {
     platform: "win32",
     shortcutPath,
@@ -30,10 +32,12 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
     workingDirectory: config.workingDirectory,
     logPath,
     restartPersistence: "shortcut-on-disk",
+    replacedExisting: supportExists || shortcutExists,
   };
 
   if (config.dryRun) return { ...result, dryRun: true };
   await assertReplaceableWindowsInstall(supportDirectory, shortcutPath, config.force);
+  await assertSupervisorNotRunning(path.join(stateDirectory, "supervisor.lock"));
   if (config.icon && !(await pathExists(config.icon))) {
     throw new Error(`图标文件不存在：${config.icon}`);
   }
@@ -81,6 +85,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       installedIconPath = path.join(supportDirectory, "app.ico");
     }
 
+    if (await pathExists(shortcutPath)) await removeExactTarget(shortcutPath);
     if (await pathExists(supportDirectory)) await removeExactTarget(supportDirectory);
     await rename(stagingDirectory, supportDirectory);
   } finally {
@@ -188,6 +193,17 @@ async function assertReplaceableWindowsInstall(supportDirectory, shortcutPath, f
   }
   if (!owned && !force) {
     throw new Error(`目标已存在且无法确认由本工具生成：${shortcutPath}。确认可覆盖后请加 --force`);
+  }
+}
+
+async function assertSupervisorNotRunning(lockPath) {
+  if (!(await pathExists(lockPath))) return;
+  try {
+    const { pid } = JSON.parse(await readFile(lockPath, "utf8"));
+    process.kill(Number(pid), 0);
+    throw new Error("当前 App 仍在运行，请先关闭 Chrome App 再重新生成");
+  } catch (error) {
+    if (error?.message?.includes("当前 App")) throw error;
   }
 }
 

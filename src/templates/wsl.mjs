@@ -20,9 +20,21 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 public static class OmdChromeWindow {
+  private const uint EventObjectCreate = 0x8000;
+  private const uint EventObjectShow = 0x8002;
+  private const uint WineventOutOfContext = 0;
+  private const uint WineventSkipOwnProcess = 2;
+  private const uint WmQuit = 0x0012;
+  private const uint WmNull = 0x0000;
+  private const uint SmtoAbortIfHung = 0x0002;
+  private const uint RdwFirstPaint = 0x0001 | 0x0080 | 0x0100;
+  private const int DwmwaCloak = 13;
   private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
+  private delegate void WinEventDelegate(IntPtr hook, uint eventType, IntPtr window, int objectId, int childId, uint threadId, uint eventTime);
   [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
   [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
   [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
@@ -30,6 +42,14 @@ public static class OmdChromeWindow {
   [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
   [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int command);
   [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder value, int count);
+  [DllImport("user32.dll")] private static extern bool GetClientRect(IntPtr hwnd, out Rect rect);
+  [DllImport("user32.dll")] private static extern bool RedrawWindow(IntPtr hwnd, IntPtr updateRect, IntPtr updateRegion, uint flags);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
+  [DllImport("user32.dll")] private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr module, WinEventDelegate callback, uint processId, uint threadId, uint flags);
+  [DllImport("user32.dll")] private static extern bool UnhookWinEvent(IntPtr hook);
+  [DllImport("user32.dll")] private static extern int GetMessage(out Message message, IntPtr window, uint min, uint max);
+  [DllImport("user32.dll")] private static extern bool PostThreadMessage(uint threadId, uint message, UIntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll")] private static extern bool GetWindowPlacement(IntPtr hwnd, ref WindowPlacement placement);
   [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
@@ -38,8 +58,22 @@ public static class OmdChromeWindow {
   [DllImport("kernel32.dll", SetLastError = true)] private static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder path, ref int size);
   [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+  [DllImport("dwmapi.dll")] private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+  [DllImport("dwmapi.dll")] private static extern int DwmFlush();
   [DllImport("shell32.dll")] private static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid interfaceId, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore propertyStore);
   [DllImport("ole32.dll")] private static extern int PropVariantClear(ref PropVariant value);
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct Message {
+    internal IntPtr window;
+    internal uint message;
+    internal UIntPtr wParam;
+    internal IntPtr lParam;
+    internal uint time;
+    internal int x;
+    internal int y;
+  }
 
   [StructLayout(LayoutKind.Sequential)]
   private struct Point {
@@ -106,30 +140,248 @@ public static class OmdChromeWindow {
     [PreserveSig] int Commit();
   }
 
-  public static long[] GetWindows(string executablePath) {
+  private static readonly object GateSync = new object();
+  private static HashSet<long> gateBaseline = new HashSet<long>();
+  private static HashSet<long> gateCandidates = new HashSet<long>();
+  private static HashSet<long> gateShownCandidates = new HashSet<long>();
+  private static string gateExecutablePath = "";
+  private static string gateExpectedAppId = "";
+  private static ManualResetEventSlim gateReady = new ManualResetEventSlim(false);
+  private static ManualResetEventSlim gateCaptured = new ManualResetEventSlim(false);
+  private static WinEventDelegate gateCallback;
+  private static Thread gateThread;
+  private static IntPtr gateHook = IntPtr.Zero;
+  private static uint gateThreadId;
+  private static long gateHandle;
+  private static int gateActive;
+
+  public static bool BeginWindowGate(string executablePath, string expectedAppId, long[] baselineHandles) {
+    CancelWindowGate();
+    gateExecutablePath = executablePath ?? "";
+    gateExpectedAppId = expectedAppId ?? "";
+    gateBaseline = new HashSet<long>(baselineHandles ?? new long[0]);
+    gateCandidates = new HashSet<long>();
+    gateShownCandidates = new HashSet<long>();
+    gateReady = new ManualResetEventSlim(false);
+    gateCaptured = new ManualResetEventSlim(false);
+    gateHandle = 0;
+    Interlocked.Exchange(ref gateActive, 1);
+    gateThread = new Thread(RunWindowGate) { IsBackground = true };
+    gateThread.SetApartmentState(ApartmentState.STA);
+    gateThread.Start();
+    return gateReady.Wait(2000) && gateHook != IntPtr.Zero;
+  }
+
+  public static long WaitForGatedWindow(int timeoutMilliseconds) {
+    if (timeoutMilliseconds < 1 || !gateCaptured.Wait(timeoutMilliseconds)) return 0;
+    return Interlocked.Read(ref gateHandle);
+  }
+
+  public static bool ReleaseWindowGate(long handle) {
+    var hwnd = new IntPtr(handle);
+    lock (GateSync) {
+      Interlocked.Exchange(ref gateActive, 0);
+      StopWindowGate();
+      if (!IsWindow(hwnd)) return false;
+      SetWindowCloaked(hwnd, false);
+      ShowWindow(hwnd, 9);
+      SetForegroundWindow(hwnd);
+      return IsWindowVisible(hwnd);
+    }
+  }
+
+  public static bool WaitForWindowReadyToReveal(long handle, int timeoutMilliseconds) {
+    var hwnd = new IntPtr(handle);
+    var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(100, timeoutMilliseconds));
+    string lastTitle = null;
+    var stableReadings = 0;
+    while (IsWindow(hwnd) && DateTime.UtcNow < deadline) {
+      Rect client;
+      var titleBuffer = new StringBuilder(512);
+      GetWindowText(hwnd, titleBuffer, titleBuffer.Capacity);
+      var title = titleBuffer.ToString().Trim();
+      var hasClientArea = GetClientRect(hwnd, out client)
+        && client.right - client.left >= 320
+        && client.bottom - client.top >= 240;
+      if (hasClientArea && !string.IsNullOrWhiteSpace(title)) {
+        stableReadings = string.Equals(lastTitle, title, StringComparison.Ordinal) ? stableReadings + 1 : 1;
+        lastTitle = title;
+        if (stableReadings >= 6) {
+          UIntPtr messageResult;
+          RedrawWindow(hwnd, IntPtr.Zero, IntPtr.Zero, RdwFirstPaint);
+          SendMessageTimeout(hwnd, WmNull, UIntPtr.Zero, IntPtr.Zero, SmtoAbortIfHung, 500, out messageResult);
+          DwmFlush();
+          Thread.Sleep(16);
+          DwmFlush();
+          return true;
+        }
+      } else {
+        stableReadings = 0;
+        lastTitle = null;
+      }
+      Thread.Sleep(50);
+    }
+    return false;
+  }
+
+  public static void CancelWindowGate() {
+    Interlocked.Exchange(ref gateActive, 0);
+    StopWindowGate();
+  }
+
+  private static void RunWindowGate() {
+    gateThreadId = GetCurrentThreadId();
+    gateCallback = OnGateWindowEvent;
+    gateHook = SetWinEventHook(
+      EventObjectCreate,
+      EventObjectShow,
+      IntPtr.Zero,
+      gateCallback,
+      0,
+      0,
+      WineventOutOfContext | WineventSkipOwnProcess
+    );
+    gateReady.Set();
+    if (gateHook == IntPtr.Zero) return;
+    try {
+      Message message;
+      while (GetMessage(out message, IntPtr.Zero, 0, 0) > 0) {}
+    } finally {
+      UnhookWinEvent(gateHook);
+      gateHook = IntPtr.Zero;
+      gateThreadId = 0;
+    }
+  }
+
+  private static void StopWindowGate() {
+    var threadId = gateThreadId;
+    if (threadId != 0) {
+      gateThreadId = 0;
+      PostThreadMessage(threadId, WmQuit, UIntPtr.Zero, IntPtr.Zero);
+    }
+  }
+
+  private static void OnGateWindowEvent(IntPtr hook, uint eventType, IntPtr window, int objectId, int childId, uint threadId, uint eventTime) {
+    if (Interlocked.CompareExchange(ref gateActive, 0, 0) == 0 || objectId != 0 || childId != 0 || window == IntPtr.Zero) return;
+    if (eventType != EventObjectCreate && eventType != EventObjectShow) return;
+    var handle = window.ToInt64();
+    if (handle == Interlocked.Read(ref gateHandle)) {
+      lock (GateSync) {
+        if (Interlocked.CompareExchange(ref gateActive, 0, 0) != 0) {
+          SetWindowCloaked(window, true);
+          ShowWindow(window, 0);
+        }
+      }
+      return;
+    }
+    if (gateBaseline.Contains(handle)) return;
+    var className = new StringBuilder(256);
+    GetClassName(window, className, className.Capacity);
+    if (!className.ToString().StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal)) return;
+    if (WindowMatchesExecutable(window, gateExecutablePath)) {
+      lock (GateSync) {
+        if (eventType == EventObjectShow) gateShownCandidates.Add(handle);
+      }
+      SetWindowCloaked(window, true);
+      ShowWindow(window, 0);
+    }
+    lock (GateSync) {
+      if (!gateCandidates.Add(handle)) return;
+    }
+    Task.Run(() => InspectGateCandidate(window));
+  }
+
+  private static void InspectGateCandidate(IntPtr window) {
+    string lastMismatchedAppId = null;
+    var mismatchedReadings = 0;
+    for (var attempt = 0; attempt < 200 && IsWindow(window); attempt += 1) {
+      if (Interlocked.CompareExchange(ref gateActive, 0, 0) == 0) return;
+      if (WindowMatchesExecutable(window, gateExecutablePath)) {
+        SetWindowCloaked(window, true);
+        ShowWindow(window, 0);
+        var appId = GetStringProperty(window.ToInt64(), 5);
+        var matchesExpectedApp = string.IsNullOrWhiteSpace(gateExpectedAppId)
+          ? GateCandidateWasShown(window.ToInt64())
+          : string.Equals(appId, gateExpectedAppId, StringComparison.OrdinalIgnoreCase);
+        if (matchesExpectedApp) {
+          if (Interlocked.CompareExchange(ref gateHandle, window.ToInt64(), 0) == 0) {
+            SetWindowCloaked(window, true);
+            ShowWindow(window, 0);
+            gateCaptured.Set();
+          }
+          return;
+        }
+        if (!string.IsNullOrWhiteSpace(appId)) {
+          mismatchedReadings = string.Equals(lastMismatchedAppId, appId, StringComparison.OrdinalIgnoreCase)
+            ? mismatchedReadings + 1
+            : 1;
+          lastMismatchedAppId = appId;
+          if (mismatchedReadings >= 20) {
+            RestoreRejectedGateCandidate(window);
+            return;
+          }
+        } else {
+          mismatchedReadings = 0;
+          lastMismatchedAppId = null;
+        }
+      }
+      Thread.Sleep(10);
+    }
+    RestoreRejectedGateCandidate(window);
+  }
+
+  private static bool WindowMatchesExecutable(IntPtr hwnd, string executablePath) {
+    uint processId;
+    GetWindowThreadProcessId(hwnd, out processId);
+    var process = OpenProcess(0x1000, false, processId);
+    if (process == IntPtr.Zero) return false;
+    try {
+      var processPath = new StringBuilder(32768);
+      var size = processPath.Capacity;
+      return QueryFullProcessImageName(process, 0, processPath, ref size)
+        && string.Equals(processPath.ToString(), executablePath, StringComparison.OrdinalIgnoreCase);
+    } finally {
+      CloseHandle(process);
+    }
+  }
+
+  private static bool SetWindowCloaked(IntPtr hwnd, bool cloaked) {
+    var value = cloaked ? 1 : 0;
+    return DwmSetWindowAttribute(hwnd, DwmwaCloak, ref value, sizeof(int)) >= 0;
+  }
+
+  private static bool GateCandidateWasShown(long handle) {
+    lock (GateSync) {
+      return gateShownCandidates.Contains(handle);
+    }
+  }
+
+  private static void RestoreRejectedGateCandidate(IntPtr window) {
+    if (!IsWindow(window)) return;
+    var wasShown = GateCandidateWasShown(window.ToInt64());
+    SetWindowCloaked(window, false);
+    if (wasShown) ShowWindow(window, 9);
+  }
+
+  private static long[] CollectWindows(string executablePath, bool visibleOnly) {
     var handles = new List<long>();
     EnumWindows((hwnd, lParam) => {
-      if (!IsWindowVisible(hwnd)) return true;
+      if (visibleOnly && !IsWindowVisible(hwnd)) return true;
       var className = new StringBuilder(256);
       GetClassName(hwnd, className, className.Capacity);
       if (!className.ToString().StartsWith("Chrome_WidgetWin_", StringComparison.Ordinal)) return true;
-      uint processId;
-      GetWindowThreadProcessId(hwnd, out processId);
-      var process = OpenProcess(0x1000, false, processId);
-      if (process == IntPtr.Zero) return true;
-      try {
-        var path = new StringBuilder(32768);
-        var size = path.Capacity;
-        if (QueryFullProcessImageName(process, 0, path, ref size)
-            && string.Equals(path.ToString(), executablePath, StringComparison.OrdinalIgnoreCase)) {
-          handles.Add(hwnd.ToInt64());
-        }
-      } finally {
-        CloseHandle(process);
-      }
+      if (WindowMatchesExecutable(hwnd, executablePath)) handles.Add(hwnd.ToInt64());
       return true;
     }, IntPtr.Zero);
     return handles.ToArray();
+  }
+
+  public static long[] GetWindows(string executablePath) {
+    return CollectWindows(executablePath, true);
+  }
+
+  public static long[] GetAllWindows(string executablePath) {
+    return CollectWindows(executablePath, false);
   }
 
   public static bool IsAlive(long handle) { return IsWindow(new IntPtr(handle)); }
@@ -162,7 +414,6 @@ public static class OmdChromeWindow {
     var height = Math.Max(240, Math.Min(requestedHeight, workHeight));
     var x = info.work.left + (workWidth - width) / 2;
     var y = info.work.top + (workHeight - height) / 2;
-    ShowWindow(hwnd, 9);
     return SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, 0x0004 | 0x0010);
   }
   public static bool Close(long handle) {
@@ -269,8 +520,24 @@ function Get-PwaWindows {
 
 function Get-ChromeWindowBaseline {
   $Baseline = @{}
-  foreach ($Handle in Get-PwaWindows) { $Baseline[[string]$Handle] = $true }
+  foreach ($Handle in [OmdChromeWindow]::GetAllWindows([string]$Config.chromePath)) {
+    $Baseline[[string]$Handle] = $true
+  }
   return $Baseline
+}
+
+function Start-WindowGate([hashtable]$Baseline, [string]$ExpectedAppUserModelId) {
+  [long[]]$BaselineHandles = @($Baseline.Keys | ForEach-Object { [long]$_ })
+  return [OmdChromeWindow]::BeginWindowGate(
+    [string]$Config.chromePath,
+    $ExpectedAppUserModelId,
+    $BaselineHandles
+  )
+}
+
+function Wait-ForGatedWindow([datetime]$Deadline) {
+  $RemainingMilliseconds = [Math]::Max(1, [int]($Deadline - [datetime]::UtcNow).TotalMilliseconds)
+  return [OmdChromeWindow]::WaitForGatedWindow($RemainingMilliseconds)
 }
 
 function Wait-ForNewChromeWindow([hashtable]$Baseline, [datetime]$Deadline, [string]$ErrorMessage) {
@@ -380,6 +647,9 @@ function Stop-PwaWindow {
 
 function Start-PwaWindow([datetime]$Deadline) {
   $Baseline = Get-ChromeWindowBaseline
+  $GateStarted = Start-WindowGate $Baseline ([string]$Config.sourceAppUserModelId)
+  $WindowWasGated = $false
+  $Handle = 0
   $QuotedArguments = @($Config.pwaArguments | ForEach-Object {
     $Value = [string]$_
     if ($Value -match '[\s"]') { '"' + $Value.Replace('"', '\"') + '"' } else { $Value }
@@ -389,12 +659,26 @@ function Start-PwaWindow([datetime]$Deadline) {
   [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, 'managed-launch', [System.Text.Encoding]::ASCII)
   try {
     Start-Process -FilePath $Config.pwaLauncherPath -ArgumentList ($QuotedArguments -join ' ') | Out-Null
-    $Handle = Wait-ForNewChromeWindow $Baseline $Deadline '无法确认已安装的 Windows Chrome App 窗口已打开'
+    $Handle = if ($GateStarted) { Wait-ForGatedWindow $Deadline } else { 0 }
+    if ($Handle) {
+      $WindowWasGated = $true
+    } else {
+      [OmdChromeWindow]::CancelWindowGate()
+      $Handle = Wait-ForNewChromeWindow $Baseline $Deadline '无法确认已安装的 Windows Chrome App 窗口已打开'
+    }
     Set-TaskbarIdentity $Handle
     Restore-WindowSizeAndCenter $Handle
+    if ($WindowWasGated) {
+      [OmdChromeWindow]::WaitForWindowReadyToReveal($Handle, 1500) | Out-Null
+      if (-not [OmdChromeWindow]::ReleaseWindowGate($Handle)) { throw '无法显示准备完成的 Windows Chrome App 窗口' }
+    } else {
+      [OmdChromeWindow]::Activate($Handle) | Out-Null
+    }
     [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$Handle, [System.Text.Encoding]::ASCII)
     return $Handle
   } catch {
+    [OmdChromeWindow]::CancelWindowGate()
+    if ($Handle) { [OmdChromeWindow]::Close($Handle) | Out-Null }
     Remove-Item -LiteralPath $Config.windowHandlePath -Force -ErrorAction SilentlyContinue
     throw
   }
@@ -508,19 +792,33 @@ function Run-BrowserLifecycle {
   Wait-ForHostService $ServiceDeadline
   if ($Config.launchMode -eq 'installed-pwa') {
     $Handle = Start-PwaWindow ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30)))
-    [OmdChromeWindow]::Activate($Handle) | Out-Null
     Wait-ForWindowToClose $Handle
     Remove-Item -LiteralPath $Config.windowHandlePath -Force -ErrorAction SilentlyContinue
     return
   }
   $WindowBaseline = Get-ChromeWindowBaseline
+  $GateStarted = Start-WindowGate $WindowBaseline ''
+  $WindowWasGated = $false
   Start-HostChrome
   $BrowserDeadline = [datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30))
   Wait-ForDevTools $BrowserDeadline
   $Target = Wait-ForAppTarget ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30)))
-  $WindowHandle = Wait-ForNewChromeWindow $WindowBaseline ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30))) '无法确认 Windows Chrome App 窗口已打开'
+  $WindowDeadline = [datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30))
+  $WindowHandle = if ($GateStarted) { Wait-ForGatedWindow $WindowDeadline } else { 0 }
+  if ($WindowHandle) {
+    $WindowWasGated = $true
+  } else {
+    [OmdChromeWindow]::CancelWindowGate()
+    $WindowHandle = Wait-ForNewChromeWindow $WindowBaseline $WindowDeadline '无法确认 Windows Chrome App 窗口已打开'
+  }
   Set-TaskbarIdentity $WindowHandle
   Restore-WindowSizeAndCenter $WindowHandle
+  if ($WindowWasGated) {
+    [OmdChromeWindow]::WaitForWindowReadyToReveal($WindowHandle, 1500) | Out-Null
+    if (-not [OmdChromeWindow]::ReleaseWindowGate($WindowHandle)) { throw '无法显示准备完成的 Windows Chrome App 窗口' }
+  } else {
+    [OmdChromeWindow]::Activate($WindowHandle) | Out-Null
+  }
   Invoke-DevTools ('/json/activate/' + [string]$Target.id) | Out-Null
   while ($true) {
     Save-WindowSize $WindowHandle

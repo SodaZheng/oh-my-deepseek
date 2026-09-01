@@ -68,6 +68,7 @@ test("installs one canonical Chrome App with an idle launch monitor", { skip: pr
     { manageLaunchAgent: false },
   );
 
+  assert.equal(result.replacedExisting, false);
   assert.equal(result.appPath, result.chromeShimPath);
   assert.equal(result.usesLaunchMonitor, true);
   assert.match(await readFile(path.join(result.appPath, "Contents", "Info.plist"), "utf8"), /CrAppModeShortcutID/);
@@ -86,6 +87,8 @@ test("installs one canonical Chrome App with an idle launch monitor", { skip: pr
   const ownership = JSON.parse(await readFile(path.join(root, "Library", "Application Support", "Oh My DeepSeek", "apps", `${config.slug}-${config.instanceId.slice(0, 8)}`, "ownership.json"), "utf8"));
   assert.equal(ownership.appPath, result.appPath);
   assert.equal(ownership.chromeAppId, appId);
+  const staleAppFile = path.join(result.appPath, "stale-generated-file.txt");
+  await writeFile(staleAppFile, "old app payload");
 
   const recreated = await createMacLauncher(
     config,
@@ -93,6 +96,8 @@ test("installs one canonical Chrome App with an idle launch monitor", { skip: pr
     { manageLaunchAgent: false },
   );
   assert.equal(recreated.appPath, result.appPath);
+  assert.equal(recreated.replacedExisting, true);
+  assert.equal(await pathExists(staleAppFile), false);
 
   await writeFile(path.join(result.appPath, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>

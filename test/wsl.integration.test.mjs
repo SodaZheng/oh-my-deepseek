@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -28,6 +28,9 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   );
   const officialPwaAppUserModelId = `Chrome._crx_${installedAppId}`;
   const appUserModelId = `OpenAI.OhMyDeepSeek.${config.instanceId}`;
+  const shortcutExistenceAtCreation = [];
+  const refreshedTaskbarShortcuts = [];
+  const pinnedPwaShortcutPath = String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\WSL Harness.lnk`;
   config.homeDirectory = home;
   const toLocalPath = (windowsPath) => {
     assert.match(windowsPath, /^[A-Z]:\\/i);
@@ -51,13 +54,14 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
     },
     createShortcut(options) {
       const target = toLocalPath(options.shortcutPath);
+      shortcutExistenceAtCreation.push({ shortcutPath: options.shortcutPath, existed: existsSync(target) });
       mkdirSync(path.dirname(target), { recursive: true });
       writeFileSync(target, JSON.stringify(options));
     },
     inspectShortcut({ shortcutPath }) {
       try {
         const value = JSON.parse(requireShortcut(shortcutPath));
-        return { targetPath: value.launcherPath, arguments: "" };
+        return { targetPath: value.launcherPath, arguments: "", appUserModelId: value.appUserModelId };
       } catch {
         return null;
       }
@@ -69,10 +73,16 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
       return {
         shortcutPath: String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Chrome Apps\WSL Harness.lnk`,
         appUserModelId: officialPwaAppUserModelId,
+        pinnedShortcutPath: pinnedPwaShortcutPath,
       };
     },
     createStartupMonitor({ monitorPath, shortcutPath }) {
-      writeFileSync(toLocalPath(shortcutPath), JSON.stringify({ launcherPath: monitorPath }));
+      const target = toLocalPath(shortcutPath);
+      shortcutExistenceAtCreation.push({ shortcutPath, existed: existsSync(target) });
+      writeFileSync(target, JSON.stringify({ launcherPath: monitorPath }));
+    },
+    refreshTaskbarShortcut({ shortcutPath }) {
+      refreshedTaskbarShortcuts.push(shortcutPath);
     },
     resolveDirectService() {
       return {
@@ -95,6 +105,13 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   const legacyWarmStartShortcut = toLocalPath(String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\WSL Harness (WSL Warm Start).lnk`);
   await mkdir(path.dirname(legacyWarmStartShortcut), { recursive: true });
   await writeFile(legacyWarmStartShortcut, "legacy warm start");
+  const pinnedPwaShortcut = toLocalPath(pinnedPwaShortcutPath);
+  const originalPinnedShortcut = JSON.stringify({
+    launcherPath: proxyPath,
+    appUserModelId: officialPwaAppUserModelId,
+  });
+  await mkdir(path.dirname(pinnedPwaShortcut), { recursive: true });
+  await writeFile(pinnedPwaShortcut, originalPinnedShortcut);
   const windowsWslExecutable = toLocalPath(String.raw`C:\Windows\System32\wsl.exe`);
   await mkdir(path.dirname(windowsWslExecutable), { recursive: true });
   await writeFile(windowsWslExecutable, "wsl executable placeholder");
@@ -104,6 +121,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
     { executable: chromeExecutable, icon },
     interop,
   );
+  assert.equal(result.replacedExisting, false);
   const hostSupport = toLocalPath(result.hostSupportDirectory);
   const shortcut = toLocalPath(result.shortcutPath);
   assert.equal(await pathExists(shortcut), true);
@@ -122,6 +140,15 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   const pwaMonitorSource = await readFile(path.join(hostSupport, "pwa-monitor.cs"), "utf8");
   assert.match(pwaMonitorSource, new RegExp(Buffer.from(officialPwaAppUserModelId, "utf8").toString("base64")));
   assert.doesNotMatch(pwaMonitorSource, new RegExp(Buffer.from(appUserModelId, "utf8").toString("base64")));
+  assert.match(pwaMonitorSource, /EventObjectCreate/);
+  assert.match(pwaMonitorSource, /DwmSetWindowAttribute/);
+  assert.match(pwaMonitorSource, /ShowWindow\(window, 0\)/);
+  const browserHostSource = await readFile(path.join(hostSupport, "browser-host.ps1"), "utf8");
+  assert.match(browserHostSource, /BeginWindowGate/);
+  assert.match(browserHostSource, /DwmSetWindowAttribute/);
+  assert.match(browserHostSource, /WaitForWindowReadyToReveal/);
+  assert.match(browserHostSource, /DwmFlush/);
+  assert.match(browserHostSource, /ReleaseWindowGate/);
   const shortcutOptions = JSON.parse(await readFile(shortcut, "utf8"));
   assert.match(shortcutOptions.launcherPath, /launcher\.exe$/i);
   assert.equal(shortcutOptions.appUserModelId, appUserModelId);
@@ -159,15 +186,57 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(result.taskbarIdentityMatched, true);
   assert.equal(result.usesOfficialPwaEntry, true);
   assert.equal(result.officialPwaAppUserModelId, officialPwaAppUserModelId);
+  assert.equal(result.pinnedShortcutMigration, "migrated");
+  assert.equal(result.pinnedPwaShortcutPath, pinnedPwaShortcutPath);
   assert.equal(result.appUserModelId, appUserModelId);
   assert.equal(result.restartPersistence, "shortcut-and-login-monitor");
   const monitorStartupShortcut = toLocalPath(String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\WSL Harness Monitor.lnk`);
   assert.equal(await pathExists(monitorStartupShortcut), true);
   assert.equal(await pathExists(legacyWarmStartShortcut), false);
+  const migratedPinnedShortcut = JSON.parse(await readFile(pinnedPwaShortcut, "utf8"));
+  assert.match(migratedPinnedShortcut.launcherPath, /launcher\.exe$/i);
+  assert.equal(migratedPinnedShortcut.appUserModelId, appUserModelId);
+  assert.deepEqual(refreshedTaskbarShortcuts, [pinnedPwaShortcutPath]);
+  assert.equal(
+    await readFile(toLocalPath(result.pinnedPwaShortcutBackupPath), "utf8"),
+    originalPinnedShortcut,
+    "the original Chrome PWA taskbar shortcut must remain recoverable",
+  );
 
   const persistence = await inspectWslRestartPersistence(config, interop);
   assert.equal(persistence.ok, true, persistence.detail);
   assert.match(persistence.detail, /Windows 登录监视器/);
+
+  const staleWslSupportFile = path.join(result.supportDirectory, "stale-generated-file.txt");
+  const staleHostSupportFile = path.join(hostSupport, "stale-generated-file.txt");
+  const persistedWindowBounds = toLocalPath(browserConfig.windowBoundsPath);
+  await writeFile(staleWslSupportFile, "old WSL support payload");
+  await writeFile(staleHostSupportFile, "old Windows support payload");
+  await mkdir(path.dirname(persistedWindowBounds), { recursive: true });
+  await writeFile(persistedWindowBounds, "saved window size");
+  const secondCreationStart = shortcutExistenceAtCreation.length;
+
+  const recreated = await createWslLauncher(
+    config,
+    { executable: chromeExecutable, icon },
+    interop,
+  );
+
+  assert.equal(recreated.replacedExisting, true);
+  assert.equal(await pathExists(staleWslSupportFile), false);
+  assert.equal(await pathExists(staleHostSupportFile), false);
+  assert.equal(await pathExists(persistedWindowBounds), true, "saved window state must survive launcher replacement");
+  const secondShortcutCreations = shortcutExistenceAtCreation.slice(secondCreationStart);
+  assert.equal(secondShortcutCreations.length, 4);
+  assert.equal(
+    secondShortcutCreations
+      .filter(({ shortcutPath }) => shortcutPath !== pinnedPwaShortcutPath)
+      .every(({ existed }) => existed === false),
+    true,
+    "old shortcuts must be deleted before their replacements are created",
+  );
+  assert.equal(secondShortcutCreations.find(({ shortcutPath }) => shortcutPath === pinnedPwaShortcutPath)?.existed, true);
+  assert.equal(await readFile(toLocalPath(recreated.pinnedPwaShortcutBackupPath), "utf8"), originalPinnedShortcut);
 });
 
 test("parses only service commands that are safe to execute without a shell", () => {

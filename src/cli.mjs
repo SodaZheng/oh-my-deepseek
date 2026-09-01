@@ -62,7 +62,9 @@ function printCreateResult(result, asJson) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return;
   }
-  const prefix = result.dryRun ? "将创建" : "已创建";
+  const prefix = result.dryRun
+    ? (result.replacedExisting ? "将销毁旧入口并重新创建" : "将创建")
+    : (result.replacedExisting ? "已销毁旧入口并重新创建" : "已创建");
   if (result.platform === "darwin") {
     process.stdout.write(`${prefix} macOS App：${result.appPath}\n`);
     if (result.desktopShortcut) process.stdout.write(`${prefix}桌面入口：${result.desktopShortcut}\n`);
@@ -79,6 +81,12 @@ function printCreateResult(result, asJson) {
   } else if (result.platform === "wsl") {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
     process.stdout.write(`${prefix} Windows 开始菜单入口：${result.startMenuShortcutPath}\n`);
+    if (result.pinnedShortcutMigration === "migrated") {
+      process.stdout.write(`已迁移旧任务栏固定入口：${result.pinnedPwaShortcutPath}\n`);
+      process.stdout.write(`原固定入口备份：${result.pinnedPwaShortcutBackupPath}\n`);
+    } else if (result.dryRun && result.pinnedShortcutMigration === "planned") {
+      process.stdout.write(`将迁移旧任务栏固定入口：${result.pinnedPwaShortcutPath}\n`);
+    }
     process.stdout.write(`WSL 发行版：${result.wslDistro}\n`);
     if (result.usesInstalledPwa) {
       process.stdout.write(`Windows Chrome App：已安装 PWA ${result.chromeAppId}（${result.chromeProfileDirectory}）\n`);

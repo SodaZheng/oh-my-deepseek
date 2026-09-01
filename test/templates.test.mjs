@@ -147,11 +147,21 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(shortcut, /\$Shortcut\.TargetPath = \$LauncherPath/);
   assert.doesNotMatch(shortcut, /Get-Command wscript\.exe/);
   assert.match(pwaMonitor, /SetWinEventHook/);
+  assert.match(pwaMonitor, /EventObjectCreate/);
   assert.match(pwaMonitor, /EventObjectShow/);
+  assert.match(pwaMonitor, /DwmSetWindowAttribute/);
+  assert.match(pwaMonitor, /DwmwaCloak = 13/);
+  assert.match(pwaMonitor, /ConcurrentDictionary/);
+  assert.match(pwaMonitor, /ShowWindow\(window, 0\)/);
   assert.match(pwaMonitor, /ReadAppUserModelId/);
   assert.match(pwaMonitor, /Size = 24/);
   assert.doesNotMatch(pwaMonitor, /Size = 16/);
   assert.match(pwaMonitor, /launcher\.WaitForExit/);
+  const pwaMonitorCallback = pwaMonitor.slice(
+    pwaMonitor.indexOf("private static void OnWindowEvent"),
+    pwaMonitor.indexOf("private static void InspectWindow"),
+  );
+  assert.ok(pwaMonitorCallback.indexOf("SetWindowCloaked(window, true)") < pwaMonitorCallback.indexOf("Task.Run"));
   assert.match(browserHost, /DevToolsActivePort/);
   assert.match(browserHost, /Get-TargetSnapshot/);
   assert.match(browserHost, /function Test-HttpService/);
@@ -161,8 +171,26 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.doesNotMatch(browserHost, /function Test-TcpPort/);
   assert.match(browserHost, /installed-pwa/);
   assert.match(browserHost, /class OmdChromeWindow/);
+  assert.match(browserHost, /BeginWindowGate/);
+  assert.match(browserHost, /WaitForGatedWindow/);
+  assert.match(browserHost, /ReleaseWindowGate/);
+  assert.match(browserHost, /EventObjectCreate/);
+  assert.match(browserHost, /DwmSetWindowAttribute/);
+  assert.match(browserHost, /SetWindowCloaked\(hwnd, false\)/);
+  assert.match(browserHost, /WaitForWindowReadyToReveal/);
+  assert.match(browserHost, /SendMessageTimeout/);
+  assert.match(browserHost, /DwmFlush/);
+  assert.match(browserHost, /stableReadings >= 6/);
+  assert.match(browserHost, /RedrawWindow/);
+  assert.match(browserHost, /ShowWindow\(window, 0\)/);
+  const windowGateCallback = browserHost.slice(
+    browserHost.indexOf("private static void OnGateWindowEvent"),
+    browserHost.indexOf("private static void InspectGateCandidate"),
+  );
+  assert.ok(windowGateCallback.indexOf("SetWindowCloaked(window, true)") < windowGateCallback.indexOf("Task.Run"));
   assert.match(browserHost, /Start-PwaWindow/);
   assert.match(browserHost, /GetWindows\(string executablePath\)/);
+  assert.match(browserHost, /GetAllWindows\(string executablePath\)/);
   assert.match(browserHost, /SHGetPropertyStoreForWindow/);
   assert.match(browserHost, /SetTaskbarProperties/);
   assert.match(browserHost, /iconKey = new PropertyKey\(formatId, 3\)/);
@@ -182,6 +210,27 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /ActualAppUserModelId/);
   assert.match(browserHost, /ActualTaskbarIconResource/);
   assert.match(browserHost, /managed-launch/);
+  const pwaStart = browserHost.slice(
+    browserHost.indexOf("function Start-PwaWindow"),
+    browserHost.indexOf("function Test-HttpService"),
+  );
+  assert.ok(pwaStart.indexOf("Start-WindowGate") < pwaStart.indexOf("Start-Process"));
+  assert.ok(pwaStart.indexOf("Set-TaskbarIdentity") < pwaStart.indexOf("ReleaseWindowGate"));
+  assert.ok(pwaStart.indexOf("Restore-WindowSizeAndCenter") < pwaStart.indexOf("ReleaseWindowGate"));
+  assert.ok(pwaStart.indexOf("WaitForWindowReadyToReveal") < pwaStart.indexOf("ReleaseWindowGate"));
+  const centerWithSize = browserHost.slice(
+    browserHost.indexOf("public static bool CenterWithSize"),
+    browserHost.indexOf("public static bool Close"),
+  );
+  assert.doesNotMatch(centerWithSize, /ShowWindow/);
+  const browserLifecycle = browserHost.slice(
+    browserHost.indexOf("function Run-BrowserLifecycle"),
+    browserHost.indexOf("if ($Mode -eq 'Activate')"),
+  );
+  assert.ok(browserLifecycle.indexOf("Start-WindowGate") < browserLifecycle.indexOf("Start-HostChrome"));
+  assert.ok(browserLifecycle.lastIndexOf("Set-TaskbarIdentity") < browserLifecycle.lastIndexOf("ReleaseWindowGate"));
+  assert.ok(browserLifecycle.lastIndexOf("Restore-WindowSizeAndCenter") < browserLifecycle.lastIndexOf("ReleaseWindowGate"));
+  assert.ok(browserLifecycle.lastIndexOf("WaitForWindowReadyToReveal") < browserLifecycle.lastIndexOf("ReleaseWindowGate"));
   assert.match(browserHost, /Size = 24/);
   assert.doesNotMatch(browserHost, /Size = 16/);
   assert.match(browserHost, /PostMessage\(hwnd, 0x0010/);

@@ -40,12 +40,17 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   const appUserModelId = `OpenAI.OhMyDeepSeek.${config.instanceId}`;
   const officialPwaAppUserModelId = officialPwaIdentity?.appUserModelId ?? null;
   const usesOfficialPwaEntry = Boolean(officialPwaIdentity);
+  const pinnedPwaShortcutPath = officialPwaIdentity?.pinnedShortcutPath ?? null;
+  const pinnedPwaShortcutPathWsl = pinnedPwaShortcutPath ? interop.toWslPath(pinnedPwaShortcutPath) : null;
+  const pinnedPwaShortcutBackupPath = path.win32.join(hostStateDirectory, "original-pinned-pwa.lnk");
+  const pinnedPwaShortcutBackupPathWsl = interop.toWslPath(pinnedPwaShortcutBackupPath);
   const chromeProfilePath = path.win32.join(windowsEnvironment.localAppData, "Oh My DeepSeek", "profiles", appKey);
   const chromeProfilePathWsl = interop.toWslPath(chromeProfilePath);
   const shortcutDirectory = config.output ? interop.toWindowsPath(config.output) : windowsEnvironment.desktop;
   const shortcutPath = path.win32.join(shortcutDirectory, `${config.name}.lnk`);
   const shortcutPathWsl = interop.toWslPath(shortcutPath);
   const startMenuShortcutPath = path.win32.join(windowsEnvironment.programs, "Oh My DeepSeek", `${config.name}.lnk`);
+  const startMenuShortcutPathWsl = interop.toWslPath(startMenuShortcutPath);
   const monitorStartupShortcutPath = path.win32.join(windowsEnvironment.startup, `${config.name} Monitor.lnk`);
   const monitorStartupShortcutPathWsl = interop.toWslPath(monitorStartupShortcutPath);
   const lockPath = path.join(stateDirectory, "supervisor.lock");
@@ -55,6 +60,14 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   const legacyStartupShortcutPathWsl = windowsEnvironment.startup
     ? interop.toWslPath(path.win32.join(windowsEnvironment.startup, `${config.name} (WSL Warm Start).lnk`))
     : null;
+  const existingInstallPaths = [
+    supportDirectory,
+    hostSupportDirectoryWsl,
+    shortcutPathWsl,
+    startMenuShortcutPathWsl,
+    monitorStartupShortcutPathWsl,
+  ];
+  const replacedExisting = (await Promise.all(existingInstallPaths.map(pathExists))).some(Boolean);
 
   const result = {
     platform: "wsl",
@@ -68,6 +81,9 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     chromeProfileDirectory: installedWebApp?.profileDirectory ?? null,
     appUserModelId,
     officialPwaAppUserModelId,
+    pinnedPwaShortcutPath,
+    pinnedPwaShortcutBackupPath: pinnedPwaShortcutPath ? pinnedPwaShortcutBackupPath : null,
+    pinnedShortcutMigration: pinnedPwaShortcutPath ? "planned" : "not-found",
     startMenuShortcutPath,
     taskbarIdentityMatched: true,
     usesOfficialPwaEntry,
@@ -79,10 +95,11 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     workingDirectory: config.workingDirectory,
     logPath,
     restartPersistence: usesOfficialPwaEntry ? "shortcut-and-login-monitor" : "shortcut-on-disk",
+    replacedExisting,
   };
   if (config.dryRun) return { ...result, dryRun: true };
 
-  await assertReplaceableWslInstall(supportDirectory, shortcutPathWsl, config.force);
+  await assertReplaceableWslInstall(supportDirectory, existingInstallPaths, config.force);
   await assertSupervisorNotRunning(lockPath);
   if (config.icon && !(await pathExists(config.icon))) throw new Error(`图标文件不存在：${config.icon}`);
 
@@ -90,6 +107,9 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   await ensureDirectory(hostSupportRootWsl);
   await ensureDirectory(hostStateDirectoryWsl);
   await ensureDirectory(path.dirname(shortcutPathWsl));
+  if (pinnedPwaShortcutPathWsl && !(await pathExists(pinnedPwaShortcutBackupPathWsl))) {
+    await copyFile(pinnedPwaShortcutPathWsl, pinnedPwaShortcutBackupPathWsl);
+  }
   if (directService?.warmupArguments) {
     await ensureDirectory(directService.nodeCompileCachePath);
     result.compileCachePrepared = warmDirectServiceCompileCache(directService, config);
@@ -207,9 +227,17 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
 
     await stopLegacyWslPrewarm(legacyPrewarmLockPath, legacyPrewarmScriptPath);
     if (await pathExists(legacyPrewarmReadyPath)) await removeExactTarget(legacyPrewarmReadyPath);
+    interop.stopPwaMonitor?.({ monitorPath: path.win32.join(hostSupportDirectory, "pwa-monitor.exe") });
+    for (const existingShortcut of [
+      shortcutPathWsl,
+      startMenuShortcutPathWsl,
+      monitorStartupShortcutPathWsl,
+      legacyStartupShortcutPathWsl,
+    ]) {
+      if (existingShortcut && await pathExists(existingShortcut)) await removeExactTarget(existingShortcut);
+    }
     if (await pathExists(supportDirectory)) await removeExactTarget(supportDirectory);
     await rename(stagingDirectory, supportDirectory);
-    interop.stopPwaMonitor?.({ monitorPath: path.win32.join(hostSupportDirectory, "pwa-monitor.exe") });
     if (await pathExists(hostSupportDirectoryWsl)) await removeExactTarget(hostSupportDirectoryWsl);
     await rename(hostStagingDirectory, hostSupportDirectoryWsl);
   } finally {
@@ -228,6 +256,21 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   };
   interop.createShortcut({ ...shortcutOptions, shortcutPath });
   interop.createShortcut({ ...shortcutOptions, shortcutPath: startMenuShortcutPath });
+  if (pinnedPwaShortcutPath) {
+    interop.createShortcut({
+      ...shortcutOptions,
+      shortcutPath: pinnedPwaShortcutPath,
+      description: `${config.name} — 任务栏直接启动 WSL 服务与 Chrome App`,
+    });
+    interop.refreshTaskbarShortcut?.({ shortcutPath: pinnedPwaShortcutPath });
+    const migratedPinnedShortcut = interop.inspectShortcut?.({ shortcutPath: pinnedPwaShortcutPath });
+    if (!migratedPinnedShortcut
+        || !windowsPathsEqual(migratedPinnedShortcut.targetPath, launcherPath)
+        || String(migratedPinnedShortcut.appUserModelId).toLowerCase() !== appUserModelId.toLowerCase()) {
+      throw new Error(`旧任务栏固定入口迁移验证失败：${pinnedPwaShortcutPath}`);
+    }
+    result.pinnedShortcutMigration = "migrated";
+  }
 
   if (usesOfficialPwaEntry) {
     interop.createStartupMonitor({
@@ -237,11 +280,6 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       supportDirectory: hostSupportDirectory,
       iconPath: installedIconPath,
     });
-  } else {
-    if (await pathExists(monitorStartupShortcutPathWsl)) await removeExactTarget(monitorStartupShortcutPathWsl);
-  }
-  if (legacyStartupShortcutPathWsl && await pathExists(legacyStartupShortcutPathWsl)) {
-    await removeExactTarget(legacyStartupShortcutPathWsl);
   }
   const persistence = await inspectWslRestartPersistence(config, interop);
   if (!persistence.ok) throw new Error(`Windows/WSL 重启启动链验证失败：${persistence.detail}`);
@@ -396,7 +434,7 @@ $Value = @{
     }
   },
   inspectShortcut({ shortcutPath }) {
-    const script = `$Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut(${powershellSingleQuote(shortcutPath)}); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::Write((@{ targetPath = [string]$Shortcut.TargetPath; arguments = [string]$Shortcut.Arguments } | ConvertTo-Json -Compress))`;
+    const script = `$ShortcutPath = ${powershellSingleQuote(shortcutPath)}; $Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($ShortcutPath); $Folder = (New-Object -ComObject Shell.Application).Namespace([System.IO.Path]::GetDirectoryName($ShortcutPath)); $Item = if ($Folder) { $Folder.ParseName([System.IO.Path]::GetFileName($ShortcutPath)) } else { $null }; $AppUserModelId = if ($Item) { [string]$Item.ExtendedProperty('System.AppUserModel.ID') } else { '' }; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); [Console]::Write((@{ targetPath = [string]$Shortcut.TargetPath; arguments = [string]$Shortcut.Arguments; appUserModelId = $AppUserModelId } | ConvertTo-Json -Compress))`;
     const result = runPowerShell(script);
     if (result.error || result.status !== 0 || !result.stdout.trim()) return null;
     try {
@@ -431,6 +469,21 @@ $Value = @{
   },
   stopPwaMonitor({ monitorPath }) {
     const script = `$Expected = ${powershellSingleQuote(monitorPath)}; Get-CimInstance Win32_Process -Filter "Name = 'pwa-monitor.exe'" -ErrorAction SilentlyContinue | Where-Object { [string]::Equals([string]$_.ExecutablePath, $Expected, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+    runPowerShell(script);
+  },
+  refreshTaskbarShortcut({ shortcutPath }) {
+    const script = `
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class OhMyDeepSeekShellRefresh {
+  [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+  private static extern void SHChangeNotify(uint eventId, uint flags, string item1, IntPtr item2);
+  public static void Notify(string path) { SHChangeNotify(0x00002000, 0x0005, path, IntPtr.Zero); }
+}
+'@
+[OhMyDeepSeekShellRefresh]::Notify(${powershellSingleQuote(shortcutPath)})
+`;
     runPowerShell(script);
   },
   resolveDirectService(config) {
@@ -478,6 +531,7 @@ export function findPwaShortcutIdentity({ installedWebApp, windowsEnvironment })
   if (!roots) return null;
   const script = `
 $Roots = @(${roots})
+$PinnedRoot = ${powershellSingleQuote(pinnedTaskbar ?? "")}
 $ExpectedTarget = ${powershellSingleQuote(installedWebApp.launcherPath)}
 $AppArgument = ${powershellSingleQuote(`--app-id=${installedWebApp.appId}`)}
 $ProfileArgument = ${powershellSingleQuote(`--profile-directory=${installedWebApp.profileDirectory}`)}
@@ -488,6 +542,8 @@ $Files = @($Roots | ForEach-Object {
     Get-ChildItem -LiteralPath $_ -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue
   }
 } | Sort-Object FullName -Unique)
+$Identity = $null
+$PinnedShortcutPath = $null
 foreach ($File in $Files) {
   try {
     $Shortcut = $WshShell.CreateShortcut($File.FullName)
@@ -498,28 +554,38 @@ foreach ($File in $Files) {
     $Item = if ($Folder) { $Folder.ParseName($File.Name) } else { $null }
     $AppUserModelId = if ($Item) { [string]$Item.ExtendedProperty('System.AppUserModel.ID') } else { '' }
     if ([string]::IsNullOrWhiteSpace($AppUserModelId)) { continue }
-    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-    [Console]::Write((@{ shortcutPath = $File.FullName; appUserModelId = $AppUserModelId } | ConvertTo-Json -Compress))
-    exit 0
+    if (-not $Identity) { $Identity = @{ shortcutPath = $File.FullName; appUserModelId = $AppUserModelId } }
+    if (-not [string]::IsNullOrWhiteSpace($PinnedRoot) -and
+        $File.FullName.StartsWith(($PinnedRoot.TrimEnd('\\') + '\\'), [StringComparison]::OrdinalIgnoreCase)) {
+      $PinnedShortcutPath = $File.FullName
+    }
   } catch {}
 }
-exit 3
+if (-not $Identity) { exit 3 }
+$Identity['pinnedShortcutPath'] = $PinnedShortcutPath
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::Write(($Identity | ConvertTo-Json -Compress))
 `;
   const result = runPowerShell(script);
   if (result.error || result.status !== 0 || !result.stdout.trim()) return null;
   try {
     const value = JSON.parse(result.stdout.trim());
     if (!value.shortcutPath || !value.appUserModelId || value.appUserModelId.length >= 128 || /\s/.test(value.appUserModelId)) return null;
+    if (value.pinnedShortcutPath) {
+      const expectedPinnedRoot = `${String(pinnedTaskbar).replace(/[\\/]+$/, "")}\\`;
+      if (!String(value.pinnedShortcutPath).replaceAll("/", "\\").toLowerCase().startsWith(expectedPinnedRoot.toLowerCase())) {
+        return null;
+      }
+    }
     return value;
   } catch {
     return null;
   }
 }
 
-async function assertReplaceableWslInstall(supportDirectory, shortcutPath, force) {
-  const supportExists = await pathExists(supportDirectory);
-  const shortcutExists = await pathExists(shortcutPath);
-  if (!supportExists && !shortcutExists) return;
+async function assertReplaceableWslInstall(supportDirectory, installPaths, force) {
+  const installExists = (await Promise.all(installPaths.map(pathExists))).some(Boolean);
+  if (!installExists) return;
   let owned = false;
   try {
     const config = JSON.parse(await readFile(path.join(supportDirectory, "config.json"), "utf8"));
