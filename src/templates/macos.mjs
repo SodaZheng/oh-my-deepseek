@@ -202,7 +202,10 @@ async function serviceIsReady() {
     if (!contentType.includes("text/html")) return true;
     const html = await response.text();
     if (!html.includes("<title>DeepSeek Harness</title>")) return true;
-    return html.includes("window.__DSH_BOOT__") && html.includes('"url":"/plugins/');
+    const hasBootManifest = html.includes("window.__DSH_BOOT__")
+      || html.includes('globalThis["__DSH_BOOT__"]')
+      || html.includes("globalThis['__DSH_BOOT__']");
+    return hasBootManifest && html.includes('"url":"/plugins/');
   } catch {
     return false;
   }

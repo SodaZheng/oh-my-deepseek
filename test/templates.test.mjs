@@ -37,6 +37,7 @@ test("macOS templates preserve config and escape plist values", () => {
   assert.match(supervisor, /process\.kill\(pid, force \? "SIGKILL" : "SIGTERM"\)/);
   assert.match(supervisor, /if \(force\) argumentsList\.push\("\/f"\)/);
   assert.match(supervisor, /window\.__DSH_BOOT__/);
+  assert.match(supervisor, /globalThis\["__DSH_BOOT__"\]/);
   assert.match(supervisor, /<title>DeepSeek Harness<\/title>/);
 });
 
@@ -51,6 +52,7 @@ test("macOS monitor and LaunchAgent templates stay invisible while supervising c
   assert.match(monitor, /terminateAppProcesses/);
   assert.match(monitor, /runSupervisor/);
   assert.match(monitor, /serviceIsReady/);
+  assert.match(monitor, /globalThis\["__DSH_BOOT__"\]/);
   assert.match(nativeMonitor, /forKeyPath:@"runningApplications"/);
   assert.match(nativeMonitor, /runningApplicationsWithBundleIdentifier/);
   assert.match(nativeMonitor, /launchAndReturnError/);
@@ -154,6 +156,7 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /Get-TargetSnapshot/);
   assert.match(browserHost, /function Test-HttpService/);
   assert.match(browserHost, /window\.__DSH_BOOT__/);
+  assert.match(browserHost, /globalThis\["__DSH_BOOT__"\]/);
   assert.match(browserHost, /ConsecutiveSuccesses/);
   assert.doesNotMatch(browserHost, /function Test-TcpPort/);
   assert.match(browserHost, /installed-pwa/);

@@ -409,7 +409,10 @@ function Test-HttpService {
     if (-not $ContentType.Contains('text/html')) { return $true }
     $Content = $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
     if (-not $Content.Contains('<title>DeepSeek Harness</title>')) { return $true }
-    return $Content.Contains('window.__DSH_BOOT__') -and $Content.Contains('"url":"/plugins/')
+    $HasBootManifest = $Content.Contains('window.__DSH_BOOT__') -or
+      $Content.Contains('globalThis["__DSH_BOOT__"]') -or
+      $Content.Contains("globalThis['__DSH_BOOT__']")
+    return $HasBootManifest -and $Content.Contains('"url":"/plugins/')
   } catch {
     return $false
   } finally {

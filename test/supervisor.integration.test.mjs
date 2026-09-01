@@ -33,7 +33,7 @@ test(
 
     await writeFile(
       servicePath,
-      `import { existsSync, writeFileSync } from "node:fs";\nimport http from "node:http";\nconst readyAt = Date.now() + 600;\nconst server = http.createServer((request, response) => { const ready = Date.now() >= readyAt; if (ready && !existsSync(${JSON.stringify(readyMarker)})) writeFileSync(${JSON.stringify(readyMarker)}, String(Date.now())); response.setHeader("content-type", "text/html"); response.end(ready ? '<!doctype html><title>DeepSeek Harness</title><script>window.__DSH_BOOT__={"entries":[{"url":"/plugins/ready/client.js"}]}</script>' : '<!doctype html><title>DeepSeek Harness</title>'); });\nserver.listen(${servicePort}, "127.0.0.1");\nprocess.on("SIGTERM", () => server.close(() => { writeFileSync(${JSON.stringify(stoppedMarker)}, "stopped"); process.exit(0); }));\n`,
+      `import { existsSync, writeFileSync } from "node:fs";\nimport http from "node:http";\nconst readyAt = Date.now() + 600;\nconst server = http.createServer((request, response) => { const ready = Date.now() >= readyAt; if (ready && !existsSync(${JSON.stringify(readyMarker)})) writeFileSync(${JSON.stringify(readyMarker)}, String(Date.now())); response.setHeader("content-type", "text/html"); response.end(ready ? '<!doctype html><title>DeepSeek Harness</title><script>globalThis["__DSH_BOOT__"] = {"entries":[{"url":"/plugins/ready/client.js"}]}</script>' : '<!doctype html><title>DeepSeek Harness</title>'); });\nserver.listen(${servicePort}, "127.0.0.1");\nprocess.on("SIGTERM", () => server.close(() => { writeFileSync(${JSON.stringify(stoppedMarker)}, "stopped"); process.exit(0); }));\n`,
     );
     await writeFile(
       chromePath,
