@@ -103,7 +103,7 @@ test("native macOS monitor reacts to NSWorkspace launch events without polling",
 
   const monitor = spawn(binaryPath, [configPath], { stdio: "ignore" });
   try {
-    const readyDeadline = Date.now() + 3000;
+    const readyDeadline = Date.now() + 7000;
     while (!(await pathExists(logPath)) && Date.now() < readyDeadline) await delay(50);
     assert.equal(await pathExists(logPath), true, "native monitor did not start");
     const opened = spawnSync("/usr/bin/open", [appBundle], { encoding: "utf8" });

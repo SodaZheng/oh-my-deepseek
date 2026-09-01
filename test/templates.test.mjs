@@ -3,7 +3,8 @@ import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
 import { renderMacInfoPlist, renderMacLaunchAgent, renderMacLauncher, renderMacMonitor } from "../src/templates/macos.mjs";
 import { renderMacNativeMonitorSource } from "../src/templates/macos-native-monitor.mjs";
-import { renderMacManagedLaunchAgent, renderMacServiceManagerInfo, renderMacServiceManagerSource } from "../src/templates/macos-service-manager.mjs";
+import { renderMacOnDemandActivatorSource, renderMacOnDemandProxy } from "../src/templates/macos-on-demand.mjs";
+import { renderMacManagedLaunchAgent, renderMacOnDemandLaunchAgent, renderMacServiceManagerInfo, renderMacServiceManagerSource } from "../src/templates/macos-service-manager.mjs";
 import { renderSupervisor } from "../src/templates/supervisor.mjs";
 import { renderWindowsHiddenLauncher, renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource, renderWindowsShortcutScript } from "../src/templates/windows.mjs";
 import { renderWindowsWindowState } from "../src/templates/windows-window-state.mjs";
@@ -79,6 +80,29 @@ test("macOS monitor and LaunchAgent templates stay invisible while supervising c
   assert.match(managerSource, /SMAppService/);
   assert.match(managerSource, /agentServiceWithPlistName/);
   assert.match(managerSource, /requires-approval/);
+});
+
+test("macOS on-demand templates use socket activation without an idle process", () => {
+  const activator = renderMacOnDemandActivatorSource();
+  const proxy = renderMacOnDemandProxy();
+  const launchAgent = renderMacOnDemandLaunchAgent({
+    label: "dev.ohmydeepseek.ondemand.test",
+    configPath: "/tmp/config & state.json",
+    logPath: "/tmp/on-demand.log",
+    host: "127.0.0.1",
+    port: 3080,
+  });
+  assert.match(activator, /launch_activate_socket/);
+  assert.match(activator, /first request buffered until DSH readiness/);
+  assert.match(activator, /while \(revealed \|\| \[deadline timeIntervalSinceNow\] > 0\)/);
+  assert.doesNotMatch(activator, /HideApplications|ActivateApplications|CGSSetWindowAlpha/);
+  assert.match(proxy, /OMD_LISTEN_FD/);
+  assert.match(proxy, /serviceKind !== "dsh-web"/);
+  assert.match(proxy, /consecutiveSuccesses >= 2/);
+  assert.match(launchAgent, /<key>Sockets<\/key>/);
+  assert.match(launchAgent, /<key>BundleProgram<\/key>/);
+  assert.doesNotMatch(launchAgent, /<key>RunAtLoad<\/key>|<key>KeepAlive<\/key>/);
+  assert.match(launchAgent, /config &amp; state\.json/);
 });
 
 test("Windows templates run a hidden lifecycle supervisor", () => {
@@ -165,8 +189,9 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /DevToolsActivePort/);
   assert.match(browserHost, /Get-TargetSnapshot/);
   assert.match(browserHost, /function Test-HttpService/);
-  assert.match(browserHost, /window\.__DSH_BOOT__/);
-  assert.match(browserHost, /globalThis\["__DSH_BOOT__"\]/);
+  assert.match(browserHost, /__DSH_BOOT__/);
+  assert.match(browserHost, /ConvertFrom-Json/);
+  assert.match(browserHost, /Entries\.Count -eq 0/);
   assert.match(browserHost, /ConsecutiveSuccesses/);
   assert.doesNotMatch(browserHost, /function Test-TcpPort/);
   assert.match(browserHost, /installed-pwa/);

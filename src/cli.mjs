@@ -70,14 +70,16 @@ function printCreateResult(result, asJson) {
     if (result.desktopShortcut) process.stdout.write(`${prefix}桌面入口：${result.desktopShortcut}\n`);
     if (result.usesChromeShim) {
       process.stdout.write(`Chrome App Shim：${result.chromeShimPath}\n`);
-      process.stdout.write(`按需启动监视器（${result.monitorMode}）：${result.launchAgentPath}\n`);
+      process.stdout.write(`零常驻按需启动器：${result.onDemandLauncherPath}\n`);
       if (result.requiresUserApproval) {
         process.stdout.write("需要一次授权：请在 系统设置 → 通用 → 登录项与扩展 中允许 Oh My DeepSeek 后台运行；授权后重启仍会自动生效。\n");
       } else if (result.restartPersistence === "enabled") {
-        process.stdout.write("重启持久性：已启用，后续登录会自动启动按需监视器。\n");
+        process.stdout.write("重启持久性：已启用 launchd 按需 socket；空闲时没有 OMD/Node/DSH 进程。\n");
       }
     }
     else process.stdout.write("提示：未检测到该 URL 的已安装 Chrome Web App，将使用直接 Chrome 模式，Dock 显示 Chrome 图标。\n");
+    process.stdout.write(`macOS 服务启动：${result.serviceLaunchMode === "direct" ? "固定入口直接执行" : "登录 shell 兼容模式"}\n`);
+    if (result.compileCachePrepared) process.stdout.write("DSH 启动缓存：已在 create 阶段准备\n");
   } else if (result.platform === "wsl") {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
     process.stdout.write(`${prefix} Windows 开始菜单入口：${result.startMenuShortcutPath}\n`);
@@ -101,10 +103,13 @@ function printCreateResult(result, asJson) {
       ? `Windows 启动入口：自有快捷方式/任务栏身份 + Chrome 官方 PWA/Profile\n`
       : `Windows 启动入口：原生无控制台 launcher.exe（无 WScript）\n`);
     process.stdout.write(`WSL 服务启动：${result.serviceLaunchMode === "direct" ? "直接执行（无常驻）" : "登录 shell 兼容模式"}\n`);
-    process.stdout.write(`重启持久性：${result.usesOfficialPwaEntry ? "桌面/开始菜单入口 + Windows 登录 PWA 监视器" : "桌面/开始菜单冷启动入口"}\n`);
+    process.stdout.write("重启持久性：桌面/开始菜单/任务栏入口按需冷启动；没有 Windows 登录常驻监视器。\n");
   } else {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
     process.stdout.write(`启动文件目录：${result.supportDirectory}\n`);
+    process.stdout.write(`Windows 服务启动：${result.serviceLaunchMode === "direct" ? "固定入口直接执行" : "PowerShell 兼容模式"}\n`);
+    process.stdout.write("Windows 窗口门：DSH 和页面稳定前保持隐藏；无登录常驻进程。\n");
+    if (result.compileCachePrepared) process.stdout.write("DSH 启动缓存：已在 create 阶段准备\n");
     process.stdout.write("重启持久性：快捷方式和启动依赖已保存到本机。\n");
   }
   process.stdout.write(`服务命令：${result.serviceCommand}\n`);

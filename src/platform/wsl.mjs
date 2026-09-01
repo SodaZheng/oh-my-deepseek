@@ -1,12 +1,19 @@
-import { copyFile, mkdtemp, readFile, readdir, realpath, rename } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
-import { renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource, renderWindowsShortcutScript } from "../templates/windows.mjs";
+import { renderWindowsNativeLauncherSource, renderWindowsShortcutScript } from "../templates/windows.mjs";
 import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
-import { ensureDirectory, isExecutable, pathExists, powershellSingleQuote, removeExactTarget, shellQuote, writeText } from "../utils.mjs";
+import {
+  parseSimpleServiceCommand,
+  resolveDirectPosixService,
+  warmDirectServiceCompileCache,
+} from "../service-command.mjs";
+import { ensureDirectory, pathExists, powershellSingleQuote, removeExactTarget, writeText } from "../utils.mjs";
+
+export { parseSimpleServiceCommand, warmDirectServiceCompileCache } from "../service-command.mjs";
 
 export async function createWslLauncher(config, chrome, interop = defaultInterop) {
   if (!config.wslDistro) throw new Error("无法确定当前 WSL 发行版；请在 WSL 终端中重新运行");
@@ -94,7 +101,8 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     serviceCommand: config.serviceCommand,
     workingDirectory: config.workingDirectory,
     logPath,
-    restartPersistence: usesOfficialPwaEntry ? "shortcut-and-login-monitor" : "shortcut-on-disk",
+    residentMonitor: false,
+    restartPersistence: "shortcut-on-disk",
     replacedExisting,
   };
   if (config.dryRun) return { ...result, dryRun: true };
@@ -207,24 +215,6 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       outputPathWsl: nativeLauncherExecutableWsl,
     });
     if (!(await pathExists(nativeLauncherExecutableWsl))) throw new Error("Windows 原生启动器编译完成但 launcher.exe 不存在");
-    if (usesOfficialPwaEntry) {
-      const monitorSourceWsl = path.join(hostStagingDirectory, "pwa-monitor.cs");
-      const monitorExecutableWsl = path.join(hostStagingDirectory, "pwa-monitor.exe");
-      await writeText(monitorSourceWsl, renderWindowsPwaMonitorSource({
-        appUserModelId: officialPwaAppUserModelId,
-        launcherPath: path.win32.join(hostSupportDirectory, "launcher.exe"),
-        windowHandlePath: path.win32.join(hostSupportDirectory, "app-window.txt"),
-        monitorId: config.instanceId,
-      }));
-      interop.compileNativeLauncher({
-        sourcePath: interop.toWindowsPath(monitorSourceWsl),
-        outputPath: interop.toWindowsPath(monitorExecutableWsl),
-        sourcePathWsl: monitorSourceWsl,
-        outputPathWsl: monitorExecutableWsl,
-      });
-      if (!(await pathExists(monitorExecutableWsl))) throw new Error("Windows PWA 监视器编译完成但 pwa-monitor.exe 不存在");
-    }
-
     await stopLegacyWslPrewarm(legacyPrewarmLockPath, legacyPrewarmScriptPath);
     if (await pathExists(legacyPrewarmReadyPath)) await removeExactTarget(legacyPrewarmReadyPath);
     interop.stopPwaMonitor?.({ monitorPath: path.win32.join(hostSupportDirectory, "pwa-monitor.exe") });
@@ -272,15 +262,6 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     result.pinnedShortcutMigration = "migrated";
   }
 
-  if (usesOfficialPwaEntry) {
-    interop.createStartupMonitor({
-      monitorPath: path.win32.join(hostSupportDirectory, "pwa-monitor.exe"),
-      shortcutPath: monitorStartupShortcutPath,
-      scriptPath: path.win32.join(hostSupportDirectory, "create-shortcut.ps1"),
-      supportDirectory: hostSupportDirectory,
-      iconPath: installedIconPath,
-    });
-  }
   const persistence = await inspectWslRestartPersistence(config, interop);
   if (!persistence.ok) throw new Error(`Windows/WSL 重启启动链验证失败：${persistence.detail}`);
   return result;
@@ -340,18 +321,6 @@ export async function inspectWslRestartPersistence(config, interop = defaultInte
     return { name: "重启后桌面启动", ok: false, detail: `Windows WSL 启动器已不存在：${launchConfig.wslPath}` };
   }
 
-  if (browserConfig.launchMode === "installed-pwa") {
-    const monitorPaths = [
-      path.join(hostSupportDirectoryWsl, "pwa-monitor.exe"),
-      interop.toWslPath(path.win32.join(windowsEnvironment.startup, `${config.name} Monitor.lnk`)),
-    ];
-    const monitorExistence = await Promise.all(monitorPaths.map(pathExists));
-    if (!monitorExistence.every(Boolean)) {
-      const missing = monitorPaths.filter((_, index) => !monitorExistence[index]);
-      return { name: "重启后桌面启动", ok: false, detail: `Windows 登录后的 PWA 接管监视器不完整：缺少 ${missing.join("、")}` };
-    }
-  }
-
   if (interop.inspectShortcut) {
     const expectedLauncher = path.win32.join(hostSupportDirectory, "launcher.exe");
     for (const candidate of [shortcutPath, startMenuShortcutPath]) {
@@ -360,22 +329,12 @@ export async function inspectWslRestartPersistence(config, interop = defaultInte
         return { name: "重启后桌面启动", ok: false, detail: `Windows 快捷方式目标无效：${candidate}` };
       }
     }
-    if (browserConfig.launchMode === "installed-pwa") {
-      const startupShortcutPath = path.win32.join(windowsEnvironment.startup, `${config.name} Monitor.lnk`);
-      const inspected = interop.inspectShortcut({ shortcutPath: startupShortcutPath });
-      const expectedMonitor = path.win32.join(hostSupportDirectory, "pwa-monitor.exe");
-      if (!inspected || !windowsPathsEqual(inspected.targetPath, expectedMonitor)) {
-        return { name: "重启后桌面启动", ok: false, detail: `Windows 登录监视器快捷方式目标无效：${startupShortcutPath}` };
-      }
-    }
   }
 
   return {
     name: "重启后桌面启动",
     ok: true,
-    detail: browserConfig.launchMode === "installed-pwa"
-      ? `桌面/开始菜单入口及 Windows 登录监视器均已落盘：${shortcutPath}`
-      : `桌面/开始菜单入口可直接冷启动 WSL：${shortcutPath}`,
+    detail: `桌面/开始菜单入口可按需冷启动 WSL，未安装登录常驻监视器：${shortcutPath}`,
   };
 }
 
@@ -454,19 +413,6 @@ $Value = @{
   findPwaShortcutIdentity(options) {
     return findPwaShortcutIdentity(options);
   },
-  createStartupMonitor({ monitorPath, shortcutPath, scriptPath, supportDirectory, iconPath }) {
-    this.createShortcut({
-      shortcutPath,
-      launcherPath: monitorPath,
-      supportDirectory,
-      iconPath,
-      description: "Oh My DeepSeek PWA launch monitor",
-      appUserModelId: "",
-      scriptPath,
-    });
-    const started = runPowerShell(`Start-Process -FilePath ${powershellSingleQuote(monitorPath)} -WindowStyle Hidden`);
-    if (started.error || started.status !== 0) throw new Error(`无法启动 Windows PWA 监视器：${formatCommandError(started)}`);
-  },
   stopPwaMonitor({ monitorPath }) {
     const script = `$Expected = ${powershellSingleQuote(monitorPath)}; Get-CimInstance Win32_Process -Filter "Name = 'pwa-monitor.exe'" -ErrorAction SilentlyContinue | Where-Object { [string]::Equals([string]$_.ExecutablePath, $Expected, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
     runPowerShell(script);
@@ -487,7 +433,7 @@ public static class OhMyDeepSeekShellRefresh {
     runPowerShell(script);
   },
   resolveDirectService(config) {
-    return resolveDirectWslService(config);
+    return resolveDirectPosixService(config);
   },
 };
 
@@ -631,111 +577,7 @@ async function stopLegacyWslPrewarm(lockPath, scriptPath) {
   throw new Error("旧的 WSL 预热进程未能停止；请先运行 wsl --shutdown 后重试");
 }
 
-export async function resolveDirectWslService(config) {
-  const words = parseSimpleServiceCommand(config.serviceCommand);
-  if (!words) return null;
-  const [command, ...arguments_] = words;
-  const result = spawnSync(
-    config.serviceShell,
-    ["-lic", `command -v ${shellQuote(command)}`],
-    { encoding: "utf8" },
-  );
-  if (result.error || result.status !== 0) return null;
-  const discoveredExecutable = result.stdout.trim();
-  if (!path.isAbsolute(discoveredExecutable) || discoveredExecutable.includes("\n")) return null;
-  let executable;
-  try {
-    executable = await realpath(discoveredExecutable);
-  } catch {
-    return null;
-  }
-  if (!(await isExecutable(executable))) return null;
-  return {
-    executable,
-    arguments: arguments_,
-    path: config.servicePath,
-    warmupArguments: path.basename(command).toLowerCase() === "dsh" && arguments_[0] === "web"
-      ? ["web", "--help"]
-      : null,
-  };
-}
-
-export function warmDirectServiceCompileCache(directService, config) {
-  const result = spawnSync(directService.executable, directService.warmupArguments, {
-    cwd: config.workingDirectory,
-    env: {
-      ...process.env,
-      ...(directService.path ? { PATH: directService.path } : {}),
-      NODE_COMPILE_CACHE: directService.nodeCompileCachePath,
-    },
-    stdio: "ignore",
-    timeout: 30_000,
-  });
-  return !result.error && result.status === 0;
-}
-
-export function parseSimpleServiceCommand(command) {
-  const words = [];
-  let current = "";
-  let state = "unquoted";
-  let started = false;
-  const finishWord = () => {
-    if (!started) return;
-    words.push(current);
-    current = "";
-    started = false;
-  };
-
-  for (let index = 0; index < command.length; index += 1) {
-    const character = command[index];
-    if (state === "single") {
-      if (character === "'") state = "unquoted";
-      else current += character;
-      continue;
-    }
-    if (state === "double") {
-      if (character === '"') {
-        state = "unquoted";
-      } else if (character === "\\") {
-        index += 1;
-        if (index >= command.length) return null;
-        if (command[index] === '"' || command[index] === "\\") current += command[index];
-        else current += `\\${command[index]}`;
-      } else if (character === "$" || character === "`") {
-        return null;
-      } else {
-        current += character;
-      }
-      continue;
-    }
-
-    if (character === "\n" || character === "\r") {
-      return null;
-    } else if (/\s/.test(character)) {
-      finishWord();
-    } else if (character === "'") {
-      state = "single";
-      started = true;
-    } else if (character === '"') {
-      state = "double";
-      started = true;
-    } else if (character === "\\") {
-      index += 1;
-      if (index >= command.length) return null;
-      current += command[index];
-      started = true;
-    } else if ("|&;<>()$`*?[]{}~#".includes(character)) {
-      return null;
-    } else {
-      current += character;
-      started = true;
-    }
-  }
-  if (state !== "unquoted") return null;
-  finishWord();
-  if (words.length === 0 || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) return null;
-  return words;
-}
+export const resolveDirectWslService = resolveDirectPosixService;
 
 export async function findInstalledWindowsWebApp({ config, chrome, windowsEnvironment, interop }) {
   const userDataDirectory = path.win32.join(windowsEnvironment.localAppData, "Google", "Chrome", "User Data");

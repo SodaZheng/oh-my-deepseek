@@ -8,7 +8,6 @@ import { normalizeCreateOptions } from "../src/config.mjs";
 import { createWindowsLauncher } from "../src/platform/windows.mjs";
 import { pathExists } from "../src/utils.mjs";
 import { renderWindowsHiddenLauncher, renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource } from "../src/templates/windows.mjs";
-import { renderWindowsHostBrowser } from "../src/templates/wsl.mjs";
 
 test("creates Windows support files and a desktop shortcut", { skip: process.platform !== "win32" }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "oh-my-deepseek-test-"));
@@ -32,7 +31,9 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.ps1")), false);
   assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.js")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "supervisor.mjs")), true);
-  assert.equal(await pathExists(path.join(result.supportDirectory, "window-state.ps1")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "window-state.ps1")), false);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "browser-host.ps1")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "browser-config.json")), true);
   assert.equal(result.restartPersistence, "shortcut-on-disk");
   const hiddenLauncher = await readFile(path.join(result.supportDirectory, "launcher.js"), "utf8");
   assert.notEqual(hiddenLauncher.charCodeAt(0), 0xfeff);
@@ -40,32 +41,20 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.doesNotMatch(hiddenLauncher, /powershell\.exe/i);
   const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
   assert.equal(storedConfig.generatedBy, "oh-my-deepseek");
-  assert.equal(storedConfig.windowStateScriptPath, path.join(result.supportDirectory, "window-state.ps1"));
-  assert.match(storedConfig.windowBoundsPath, /window-size\.json$/);
+  assert.equal(storedConfig.launchMode, "windows-host-browser");
+  assert.equal(storedConfig.hostBrowserScriptPath, path.join(result.supportDirectory, "browser-host.ps1"));
+  assert.equal(result.residentMonitor, false);
+  assert.equal(result.windowGate, true);
 
-  const browserHostPath = path.join(root, "browser-host.ps1");
-  await writeFile(browserHostPath, renderWindowsHostBrowser());
+  const browserHostPath = path.join(result.supportDirectory, "browser-host.ps1");
   const shortcutScriptPath = path.join(result.supportDirectory, "create-shortcut.ps1");
-  const windowStateScriptPath = path.join(result.supportDirectory, "window-state.ps1");
-  const paths = [browserHostPath, shortcutScriptPath, windowStateScriptPath].map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
+  const paths = [browserHostPath, shortcutScriptPath].map((value) => `'${value.replaceAll("'", "''")}'`).join(",");
   const parseCommand = `$Files = @(${paths}); foreach ($File in $Files) { $Tokens = $null; $Errors = $null; [System.Management.Automation.Language.Parser]::ParseFile($File, [ref]$Tokens, [ref]$Errors) | Out-Null; if ($Errors.Count -gt 0) { $Errors | ForEach-Object { Write-Error $_ }; exit 1 } }`;
   const parseResult = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-Command", parseCommand], {
     encoding: "utf8",
     windowsHide: true,
   });
   assert.equal(parseResult.status, 0, parseResult.stderr || parseResult.stdout);
-  const windowStateCompileResult = spawnSync(
-    "powershell.exe",
-    [
-      "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", windowStateScriptPath,
-      "-ChromeProcessId", "1",
-      "-BoundsPath", path.join(root, "window-size.json"),
-      "-ReadyPath", path.join(root, "window-state.ready"),
-      "-CompileOnly",
-    ],
-    { encoding: "utf8", windowsHide: true },
-  );
-  assert.equal(windowStateCompileResult.status, 0, windowStateCompileResult.stderr || windowStateCompileResult.stdout);
   const browserConfigPath = path.join(root, "browser-config.json");
   await writeFile(browserConfigPath, JSON.stringify({
     launchMode: "url-app",

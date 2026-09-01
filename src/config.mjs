@@ -59,8 +59,10 @@ export function normalizeCreateOptions(values, { platform = process.platform, cw
     nodePath: process.execPath,
     wslDistro: normalizedPlatform === "wsl" ? env.WSL_DISTRO_NAME ?? null : null,
     wslUser: normalizedPlatform === "wsl" ? env.USER ?? null : null,
-    serviceShell: normalizedPlatform === "wsl" ? env.SHELL || "/bin/bash" : null,
-    servicePath: normalizedPlatform === "wsl" ? env.PATH ?? null : null,
+    serviceShell: normalizedPlatform === "wsl"
+      ? env.SHELL || "/bin/bash"
+      : (normalizedPlatform === "darwin" ? env.SHELL || "/bin/zsh" : null),
+    servicePath: env.PATH ?? null,
   };
 }
 

@@ -1,6 +1,6 @@
 import { xmlEscape } from "../utils.mjs";
 
-export function renderMacServiceManagerInfo({ bundleIdentifier, name }) {
+export function renderMacServiceManagerInfo({ bundleIdentifier, name, version = 1 }) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -8,7 +8,7 @@ export function renderMacServiceManagerInfo({ bundleIdentifier, name }) {
   <key>CFBundleDevelopmentRegion</key>
   <string>zh_CN</string>
   <key>CFBundleDisplayName</key>
-  <string>${xmlEscape(name)} Background Launcher</string>
+  <string>${xmlEscape(name)} On Demand Launcher</string>
   <key>CFBundleExecutable</key>
   <string>service-manager</string>
   <key>CFBundleIdentifier</key>
@@ -16,13 +16,13 @@ export function renderMacServiceManagerInfo({ bundleIdentifier, name }) {
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>${xmlEscape(name)} Background Launcher</string>
+  <string>${xmlEscape(name)} On Demand Launcher</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
   <string>1.0</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>${xmlEscape(String(version))}</string>
   <key>LSBackgroundOnly</key>
   <true/>
   <key>LSMinimumSystemVersion</key>
@@ -56,6 +56,51 @@ export function renderMacManagedLaunchAgent({ label, monitorConfigPath, logPath 
   <string>Aqua</string>
   <key>LowPriorityIO</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>1</integer>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(logPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(logPath)}</string>
+</dict>
+</plist>
+`;
+}
+
+export function renderMacOnDemandLaunchAgent({ label, configPath, logPath, host, port }) {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xmlEscape(label)}</string>
+  <key>BundleProgram</key>
+  <string>Contents/MacOS/on-demand-launcher</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>on-demand-launcher</string>
+    <string>${xmlEscape(configPath)}</string>
+  </array>
+  <key>Sockets</key>
+  <dict>
+    <key>HttpListener</key>
+    <dict>
+      <key>SockNodeName</key>
+      <string>${xmlEscape(host)}</string>
+      <key>SockServiceName</key>
+      <integer>${port}</integer>
+      <key>SockFamily</key>
+      <string>IPv4</string>
+      <key>SockType</key>
+      <string>stream</string>
+      <key>SockProtocol</key>
+      <string>TCP</string>
+    </dict>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LimitLoadToSessionType</key>
+  <string>Aqua</string>
   <key>ThrottleInterval</key>
   <integer>1</integer>
   <key>StandardOutPath</key>

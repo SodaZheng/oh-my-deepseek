@@ -8,7 +8,8 @@ import {
   renderWindowsShortcutScript,
 } from "../templates/windows.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
-import { renderWindowsWindowState } from "../templates/windows-window-state.mjs";
+import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
+import { resolveDirectWindowsService, warmDirectServiceCompileCache } from "../service-command.mjs";
 import { ensureDirectory, pathExists, removeExactTarget, writeText } from "../utils.mjs";
 
 export async function createWindowsLauncher(config, chrome, env = process.env) {
@@ -20,6 +21,12 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
   const logPath = path.join(localAppData, "Oh My DeepSeek", "logs", `${config.slug}.log`);
   const shortcutDirectory = config.output ?? getWindowsDesktopDirectory(env);
   const shortcutPath = path.join(shortcutDirectory, `${config.name}.lnk`);
+  const powerShellPath = getWindowsPowerShellPath(env);
+  const appUserModelId = `OpenAI.OhMyDeepSeek.${config.instanceId}`;
+  const resolvedDirectService = resolveDirectWindowsService(config, env);
+  const directService = resolvedDirectService
+    ? { ...resolvedDirectService, nodeCompileCachePath: path.join(stateDirectory, "node-compile-cache") }
+    : null;
   const supportExists = await pathExists(supportDirectory);
   const shortcutExists = await pathExists(shortcutPath);
   const result = {
@@ -27,10 +34,15 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
     shortcutPath,
     supportDirectory,
     chromePath: chrome.executable,
+    appUserModelId,
+    residentMonitor: false,
+    windowGate: true,
     url: config.url,
     serviceCommand: config.serviceCommand,
     workingDirectory: config.workingDirectory,
     logPath,
+    compileCachePrepared: false,
+    serviceLaunchMode: directService ? "direct" : "powershell",
     restartPersistence: "shortcut-on-disk",
     replacedExisting: supportExists || shortcutExists,
   };
@@ -43,29 +55,62 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
   }
 
   await ensureDirectory(supportRoot);
+  if (directService?.warmupArguments) {
+    await ensureDirectory(directService.nodeCompileCachePath);
+    result.compileCachePrepared = warmDirectServiceCompileCache(directService, config);
+  }
   await ensureDirectory(shortcutDirectory);
   const stagingDirectory = await mkdtemp(path.join(supportRoot, ".oh-my-deepseek-"));
-  let installedIconPath = chrome.icon ?? chrome.executable;
+  const installedIconPath = chrome.icon && path.extname(chrome.icon).toLowerCase() === ".ico"
+    ? path.join(supportDirectory, "app.ico")
+    : chrome.executable;
   try {
+    const hostBrowserScriptPath = path.join(supportDirectory, "browser-host.ps1");
+    const hostBrowserConfigPath = path.join(supportDirectory, "browser-config.json");
+    const hostBrowserErrorPath = path.join(supportDirectory, "browser-error.txt");
     const storedConfig = {
       generatedBy: GENERATED_BY,
       configVersion: CONFIG_VERSION,
       platform: "win32",
+      launchMode: "windows-host-browser",
       name: config.name,
       url: config.url,
       serviceCommand: config.serviceCommand,
+      directService,
       workingDirectory: config.workingDirectory,
       readyHost: config.readyHost,
       readyPort: config.readyPort,
       timeoutSeconds: config.timeoutSeconds,
       chromePath: chrome.executable,
+      powerShellPath,
       nodePath: config.nodePath,
       chromeProfilePath: profileDirectory,
-      windowBoundsPath: path.join(stateDirectory, "window-size.json"),
-      windowStateReadyPath: path.join(stateDirectory, "window-state.ready"),
-      windowStateScriptPath: path.join(supportDirectory, "window-state.ps1"),
+      hostBrowserScriptPath,
+      hostBrowserConfigPath,
+      hostBrowserErrorPath,
       lockPath: path.join(stateDirectory, "supervisor.lock"),
       logPath,
+    };
+    const browserConfig = {
+      generatedBy: GENERATED_BY,
+      configVersion: CONFIG_VERSION,
+      name: config.name,
+      url: config.url,
+      readyHost: config.readyHost,
+      readyPort: config.readyPort,
+      timeoutSeconds: config.timeoutSeconds,
+      chromePath: chrome.executable,
+      chromeProfilePath: profileDirectory,
+      launchMode: "url-app",
+      pwaLauncherPath: null,
+      pwaArguments: [],
+      appUserModelId,
+      sourceAppUserModelId: null,
+      taskbarIconResource: `${installedIconPath},0`,
+      windowBoundsPath: path.join(stateDirectory, "window-size.json"),
+      windowHandlePath: path.join(supportDirectory, "app-window.txt"),
+      browserPidPath: path.join(supportDirectory, "browser.pid"),
+      lastErrorPath: hostBrowserErrorPath,
     };
     await writeText(path.join(stagingDirectory, "config.json"), `${JSON.stringify(storedConfig, null, 2)}\n`);
     await writeText(
@@ -78,11 +123,11 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       }),
     );
     await writeText(path.join(stagingDirectory, "supervisor.mjs"), renderSupervisor());
-    await writeText(path.join(stagingDirectory, "window-state.ps1"), withUtf8Bom(renderWindowsWindowState()));
+    await writeText(path.join(stagingDirectory, "browser-host.ps1"), withUtf8Bom(renderWindowsHostBrowser()));
+    await writeText(path.join(stagingDirectory, "browser-config.json"), `${JSON.stringify(browserConfig, null, 2)}\n`);
     await writeText(path.join(stagingDirectory, "create-shortcut.ps1"), withUtf8Bom(renderWindowsShortcutScript()));
     if (chrome.icon && path.extname(chrome.icon).toLowerCase() === ".ico") {
       await copyFile(chrome.icon, path.join(stagingDirectory, "app.ico"));
-      installedIconPath = path.join(supportDirectory, "app.ico");
     }
 
     if (await pathExists(shortcutPath)) await removeExactTarget(shortcutPath);
@@ -99,6 +144,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
     iconPath: installedIconPath,
     description: `${config.name} — 先启动服务，再以 Chrome App 模式打开`,
     scriptPath: path.join(supportDirectory, "create-shortcut.ps1"),
+    appUserModelId,
   });
 
   const persistence = await inspectWindowsRestartPersistence(config, env);
@@ -119,6 +165,8 @@ export async function inspectWindowsRestartPersistence(config, env = process.env
     launcherPath,
     path.join(supportDirectory, "supervisor.mjs"),
     path.join(supportDirectory, "config.json"),
+    path.join(supportDirectory, "browser-host.ps1"),
+    path.join(supportDirectory, "browser-config.json"),
   ];
   const existence = await Promise.all(requiredPaths.map(pathExists));
   if (!existence.some(Boolean)) {
@@ -207,7 +255,7 @@ async function assertSupervisorNotRunning(lockPath) {
   }
 }
 
-function createWindowsShortcut({ shortcutPath, launcherPath, supportDirectory, iconPath, description, scriptPath }) {
+function createWindowsShortcut({ shortcutPath, launcherPath, supportDirectory, iconPath, description, scriptPath, appUserModelId }) {
   const result = spawnSync(
     "powershell.exe",
     [
@@ -227,6 +275,8 @@ function createWindowsShortcut({ shortcutPath, launcherPath, supportDirectory, i
       iconPath,
       "-Description",
       description,
+      "-AppUserModelId",
+      appUserModelId,
     ],
     { encoding: "utf8", windowsHide: true },
   );
@@ -234,4 +284,16 @@ function createWindowsShortcut({ shortcutPath, launcherPath, supportDirectory, i
   if (result.status !== 0) {
     throw new Error(`无法创建 Windows 快捷方式：${(result.stderr || result.stdout).trim()}`);
   }
+}
+
+function getWindowsPowerShellPath(env) {
+  const systemRoot = env.SystemRoot ?? env.SYSTEMROOT;
+  const configured = systemRoot ? path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe") : null;
+  if (configured) return configured;
+  const result = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[Console]::Write((Get-Command powershell.exe -ErrorAction Stop).Source)"], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0 || !result.stdout.trim()) throw new Error("无法确定 Windows PowerShell 路径");
+  return result.stdout.trim();
 }

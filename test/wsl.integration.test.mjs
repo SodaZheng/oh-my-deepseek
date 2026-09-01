@@ -130,19 +130,13 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(await pathExists(path.join(hostSupport, "launcher.ps1")), false);
   assert.equal(await pathExists(path.join(hostSupport, "launcher.js")), false);
   assert.equal(await pathExists(path.join(hostSupport, "launcher.exe")), true);
-  assert.equal(await pathExists(path.join(hostSupport, "pwa-monitor.exe")), true);
+  assert.equal(await pathExists(path.join(hostSupport, "pwa-monitor.exe")), false);
   const nativeLauncherSource = await readFile(path.join(hostSupport, "launcher.cs"), "utf8");
   assert.match(nativeLauncherSource, /SetCurrentProcessExplicitAppUserModelID/);
   assert.match(nativeLauncherSource, new RegExp(Buffer.from(appUserModelId, "utf8").toString("base64")));
   assert.match(nativeLauncherSource, /CreateNoWindow = true/);
   assert.match(nativeLauncherSource, /Process\.Start/);
   assert.match(nativeLauncherSource, /process\.WaitForExit\(\)/);
-  const pwaMonitorSource = await readFile(path.join(hostSupport, "pwa-monitor.cs"), "utf8");
-  assert.match(pwaMonitorSource, new RegExp(Buffer.from(officialPwaAppUserModelId, "utf8").toString("base64")));
-  assert.doesNotMatch(pwaMonitorSource, new RegExp(Buffer.from(appUserModelId, "utf8").toString("base64")));
-  assert.match(pwaMonitorSource, /EventObjectCreate/);
-  assert.match(pwaMonitorSource, /DwmSetWindowAttribute/);
-  assert.match(pwaMonitorSource, /ShowWindow\(window, 0\)/);
   const browserHostSource = await readFile(path.join(hostSupport, "browser-host.ps1"), "utf8");
   assert.match(browserHostSource, /BeginWindowGate/);
   assert.match(browserHostSource, /DwmSetWindowAttribute/);
@@ -189,9 +183,10 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(result.pinnedShortcutMigration, "migrated");
   assert.equal(result.pinnedPwaShortcutPath, pinnedPwaShortcutPath);
   assert.equal(result.appUserModelId, appUserModelId);
-  assert.equal(result.restartPersistence, "shortcut-and-login-monitor");
+  assert.equal(result.restartPersistence, "shortcut-on-disk");
+  assert.equal(result.residentMonitor, false);
   const monitorStartupShortcut = toLocalPath(String.raw`C:\Users\tester\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\WSL Harness Monitor.lnk`);
-  assert.equal(await pathExists(monitorStartupShortcut), true);
+  assert.equal(await pathExists(monitorStartupShortcut), false);
   assert.equal(await pathExists(legacyWarmStartShortcut), false);
   const migratedPinnedShortcut = JSON.parse(await readFile(pinnedPwaShortcut, "utf8"));
   assert.match(migratedPinnedShortcut.launcherPath, /launcher\.exe$/i);
@@ -205,7 +200,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
 
   const persistence = await inspectWslRestartPersistence(config, interop);
   assert.equal(persistence.ok, true, persistence.detail);
-  assert.match(persistence.detail, /Windows 登录监视器/);
+  assert.match(persistence.detail, /未安装登录常驻监视器/);
 
   const staleWslSupportFile = path.join(result.supportDirectory, "stale-generated-file.txt");
   const staleHostSupportFile = path.join(hostSupport, "stale-generated-file.txt");
@@ -227,7 +222,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(await pathExists(staleHostSupportFile), false);
   assert.equal(await pathExists(persistedWindowBounds), true, "saved window state must survive launcher replacement");
   const secondShortcutCreations = shortcutExistenceAtCreation.slice(secondCreationStart);
-  assert.equal(secondShortcutCreations.length, 4);
+  assert.equal(secondShortcutCreations.length, 3);
   assert.equal(
     secondShortcutCreations
       .filter(({ shortcutPath }) => shortcutPath !== pinnedPwaShortcutPath)

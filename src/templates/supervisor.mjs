@@ -50,7 +50,7 @@ async function main() {
     serviceReadyPromise = waitForService();
   } else {
     writeLog("检测到已有服务；App 退出时仍会强制清理对应端口");
-    serviceReadyPromise = Promise.resolve(true);
+    serviceReadyPromise = waitForService();
   }
 
   if (config.platform === "win32") {
@@ -162,7 +162,7 @@ async function runWindowsHostBrowser() {
     serviceReadyPromise = waitForService();
   } else {
     writeLog("检测到已有服务；App 退出时仍会强制清理对应端口");
-    serviceReadyPromise = Promise.resolve(true);
+    serviceReadyPromise = waitForService();
   }
 
   chromeChild = startWindowsBrowserBridge();
@@ -226,14 +226,14 @@ async function runChromeAppShim() {
   if (!(await serviceIsReady())) {
     serviceChild = startService();
     ownsService = true;
-    if (!(await waitForService())) {
-      const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
-      throw new Error(reason);
-    }
-    logOwnedServiceReady();
   } else {
     writeLog("检测到已有服务；App 退出时仍会强制清理对应端口");
   }
+  if (!(await waitForService())) {
+    const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
+    throw new Error(reason);
+  }
+  if (ownsService) logOwnedServiceReady();
 
   const opened = spawnSync("/usr/bin/open", [config.chromeShimPath], { encoding: "utf8" });
   if (opened.error || opened.status !== 0) throw new Error(\`无法打开 Chrome App Shim：\${opened.error?.message || opened.stderr || opened.stdout}\`);
@@ -451,14 +451,7 @@ function startService() {
   appendFileSync(config.logPath, \`\\n[\${new Date().toISOString()}] 启动服务：\${config.serviceCommand}\\n\`);
   const descriptor = openSync(config.logPath, "a", 0o600);
   let child;
-  if (config.platform === "win32") {
-    child = spawn(powerShellExecutable(), ["-NoLogo", "-WindowStyle", "Hidden", "-Command", config.serviceCommand], {
-      cwd: config.workingDirectory,
-      detached: true,
-      windowsHide: true,
-      stdio: ["ignore", descriptor, descriptor],
-    });
-  } else if (config.platform === "wsl" && config.directService?.executable && existsSync(config.directService.executable)) {
+  if (config.directService?.executable && existsSync(config.directService.executable)) {
     writeLog(\`直接执行服务入口：\${config.directService.executable}\`);
     child = spawn(config.directService.executable, config.directService.arguments, {
       cwd: config.workingDirectory,
@@ -472,6 +465,13 @@ function startService() {
           ? { NODE_COMPILE_CACHE: config.directService.nodeCompileCachePath }
           : {}),
       },
+    });
+  } else if (config.platform === "win32") {
+    child = spawn(powerShellExecutable(), ["-NoLogo", "-WindowStyle", "Hidden", "-Command", config.serviceCommand], {
+      cwd: config.workingDirectory,
+      detached: true,
+      windowsHide: true,
+      stdio: ["ignore", descriptor, descriptor],
     });
   } else {
     child = spawn(config.platform === "wsl" ? config.serviceShell : "/bin/zsh", ["-lic", config.serviceCommand], {
@@ -496,12 +496,18 @@ function logOwnedServiceReady() {
 
 async function waitForService() {
   const deadline = Date.now() + config.timeoutSeconds * 1000;
+  let consecutiveSuccesses = 0;
   while (Date.now() < deadline) {
-    if (await serviceIsReady()) return true;
-    if (serviceSpawnError || serviceChild.exitCode !== null) return false;
-    await delay(250);
+    if (await serviceIsReady()) {
+      consecutiveSuccesses += 1;
+      if (consecutiveSuccesses >= 2) return true;
+    } else {
+      consecutiveSuccesses = 0;
+    }
+    if (serviceSpawnError || (serviceChild && serviceChild.exitCode !== null)) return false;
+    await delay(100);
   }
-  return serviceIsReady();
+  return false;
 }
 
 async function serviceIsReady() {
@@ -515,13 +521,32 @@ async function serviceIsReady() {
     if (!contentType.includes("text/html")) return true;
     const html = await response.text();
     if (!html.includes("<title>DeepSeek Harness</title>")) return true;
-    const hasBootManifest = html.includes("window.__DSH_BOOT__")
-      || html.includes('globalThis["__DSH_BOOT__"]')
-      || html.includes("globalThis['__DSH_BOOT__']");
-    return hasBootManifest && html.includes('"url":"/plugins/');
+    return dshBootManifestIsComplete(html);
   } catch {
     return false;
   }
+}
+
+function dshBootManifestIsComplete(html) {
+  const markers = ["window.__DSH_BOOT__", 'globalThis["__DSH_BOOT__"]', "globalThis['__DSH_BOOT__']"];
+  for (const marker of markers) {
+    const markerOffset = html.indexOf(marker);
+    if (markerOffset < 0) continue;
+    const assignmentOffset = html.indexOf("=", markerOffset + marker.length);
+    const scriptEndOffset = html.indexOf("</script>", assignmentOffset + 1);
+    if (assignmentOffset < 0 || scriptEndOffset < 0) continue;
+    const serialized = html.slice(assignmentOffset + 1, scriptEndOffset).trim().replace(/;\\s*$/, "");
+    try {
+      const manifest = JSON.parse(serialized);
+      const entries = Array.isArray(manifest?.entries) ? manifest.entries : [];
+      return entries.length > 0 && entries.every((entry) =>
+        typeof entry?.id === "string" && entry.id.length > 0
+        && typeof entry?.url === "string" && entry.url.startsWith("/plugins/"));
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 function startChrome(openWindow) {

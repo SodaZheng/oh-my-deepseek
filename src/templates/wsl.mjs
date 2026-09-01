@@ -693,10 +693,20 @@ function Test-HttpService {
     if (-not $ContentType.Contains('text/html')) { return $true }
     $Content = $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
     if (-not $Content.Contains('<title>DeepSeek Harness</title>')) { return $true }
-    $HasBootManifest = $Content.Contains('window.__DSH_BOOT__') -or
-      $Content.Contains('globalThis["__DSH_BOOT__"]') -or
-      $Content.Contains("globalThis['__DSH_BOOT__']")
-    return $HasBootManifest -and $Content.Contains('"url":"/plugins/')
+    $Pattern = '(?:window\.__DSH_BOOT__|globalThis\[(?:"__DSH_BOOT__"|''__DSH_BOOT__'')\])\s*=\s*(\{.*?\})\s*</script>'
+    $Match = [regex]::Match($Content, $Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    if (-not $Match.Success) { return $false }
+    try {
+      $Boot = $Match.Groups[1].Value | ConvertFrom-Json
+      $Entries = @($Boot.entries)
+      if ($Entries.Count -eq 0) { return $false }
+      foreach ($Entry in $Entries) {
+        if ([string]::IsNullOrWhiteSpace([string]$Entry.id) -or -not ([string]$Entry.url).StartsWith('/plugins/')) { return $false }
+      }
+      return $true
+    } catch {
+      return $false
+    }
   } catch {
     return $false
   } finally {
@@ -713,7 +723,7 @@ function Wait-ForHostService([datetime]$Deadline) {
     } else {
       $ConsecutiveSuccesses = 0
     }
-    Start-Sleep -Milliseconds 250
+    Start-Sleep -Milliseconds 100
   }
   throw ("Windows 宿主机无法读取 WSL 服务 {0}。请检查 DSH 是否完成启动及 WSL localhost 转发设置" -f $Config.url)
 }
@@ -782,7 +792,7 @@ function Wait-ForAppTarget([datetime]$Deadline) {
     $Target = Get-AppTarget
     if ($Target) { return $Target }
     if (-not (Test-ManagedChrome)) { throw 'Windows Chrome 在 App 窗口打开前退出' }
-    Start-Sleep -Milliseconds 250
+    Start-Sleep -Milliseconds 100
   }
   throw '无法确认 Windows Chrome App 窗口已打开'
 }
