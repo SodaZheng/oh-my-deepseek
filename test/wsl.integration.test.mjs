@@ -89,6 +89,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
         executable: "/opt/dsh/bin/dsh",
         arguments: ["web"],
         path: "/opt/dsh/bin:/usr/bin:/bin",
+        serviceKind: "dsh-web",
+        dshWebLaunch: { kind: "argv", prefixArguments: [], arguments: ["web"] },
       };
     },
   };
@@ -126,6 +128,9 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   const shortcut = toLocalPath(result.shortcutPath);
   assert.equal(await pathExists(shortcut), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "supervisor.mjs")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "loading-proxy.mjs")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "loading-config.json")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "loading-whale.png")), true);
   assert.equal(await pathExists(path.join(hostSupport, "browser-host.ps1")), true);
   assert.equal(await pathExists(path.join(hostSupport, "launcher.ps1")), false);
   assert.equal(await pathExists(path.join(hostSupport, "launcher.js")), false);
@@ -156,12 +161,17 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(storedConfig.platform, "wsl");
   assert.equal(storedConfig.launchMode, "windows-host-browser");
   assert.equal(storedConfig.serviceShell, "/bin/bash");
-  assert.deepEqual(storedConfig.directService, {
-    executable: "/opt/dsh/bin/dsh",
-    arguments: ["web"],
-    path: "/opt/dsh/bin:/usr/bin:/bin",
-    nodeCompileCachePath: path.join(home, ".local", "state", "oh-my-deepseek", "apps", `${config.slug}-${config.instanceId.slice(0, 8)}`, "node-compile-cache"),
-  });
+  assert.equal(storedConfig.directService.executable, config.nodePath);
+  assert.deepEqual(storedConfig.directService.arguments, [
+    path.join(result.supportDirectory, "loading-proxy.mjs"),
+    path.join(result.supportDirectory, "loading-config.json"),
+  ]);
+  assert.equal(storedConfig.directService.serviceKind, "loading-proxy");
+  const loadingConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "loading-config.json"), "utf8"));
+  assert.equal(loadingConfig.platform, "wsl");
+  assert.equal(loadingConfig.directService.executable, "/opt/dsh/bin/dsh");
+  assert.equal(loadingConfig.directService.serviceKind, "dsh-web");
+  assert.equal(loadingConfig.minimumLoadingMilliseconds, 900);
   assert.match(storedConfig.powerShellPath, /Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe$/i);
   const launchConfig = JSON.parse(await readFile(path.join(hostSupport, "wsl-launch.json"), "utf8"));
   assert.equal(launchConfig.distro, "Ubuntu-Test");
@@ -169,6 +179,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.match(launchConfig.wslPath, /wsl\.exe$/i);
   const browserConfig = JSON.parse(await readFile(path.join(hostSupport, "browser-config.json"), "utf8"));
   assert.equal(browserConfig.launchMode, "installed-pwa");
+  assert.equal(browserConfig.loadingMode, true);
   assert.equal(browserConfig.appUserModelId, appUserModelId);
   assert.equal(browserConfig.sourceAppUserModelId, officialPwaAppUserModelId);
   assert.equal(browserConfig.taskbarIconResource, `${path.win32.join(result.hostSupportDirectory, "app.ico")},0`);
@@ -177,6 +188,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
     path.win32.join(String.raw`C:\Users\tester\AppData\Local`, "Oh My DeepSeek", "state", `${config.slug}-${config.instanceId.slice(0, 8)}`, "window-size.json"),
   );
   assert.equal(result.serviceLaunchMode, "direct");
+  assert.equal(result.usesLoadingScreen, true);
   assert.equal(result.taskbarIdentityMatched, true);
   assert.equal(result.usesOfficialPwaEntry, true);
   assert.equal(result.officialPwaAppUserModelId, officialPwaAppUserModelId);

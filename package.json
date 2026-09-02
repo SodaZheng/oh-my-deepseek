@@ -10,6 +10,7 @@
   "files": [
     "bin",
     "src",
+    "assets/windows-icon-master-v2.png",
     "icon.icns",
     "icon.ico",
     "README.md"

@@ -1,9 +1,11 @@
 import { copyFile, mkdtemp, readFile, readdir, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
+import { renderMacOnDemandProxy } from "../templates/macos-on-demand.mjs";
 import { renderWindowsNativeLauncherSource, renderWindowsShortcutScript } from "../templates/windows.mjs";
 import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
 import {
@@ -12,6 +14,8 @@ import {
   warmDirectServiceCompileCache,
 } from "../service-command.mjs";
 import { ensureDirectory, pathExists, powershellSingleQuote, removeExactTarget, writeText } from "../utils.mjs";
+
+const bundledLoadingIcon = fileURLToPath(new URL("../../assets/windows-icon-master-v2.png", import.meta.url));
 
 export { parseSimpleServiceCommand, warmDirectServiceCompileCache } from "../service-command.mjs";
 
@@ -37,6 +41,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
   const directService = resolvedDirectService
     ? { ...resolvedDirectService, nodeCompileCachePath: path.join(stateDirectory, "node-compile-cache") }
     : null;
+  const usesLoadingScreen = directService?.serviceKind === "dsh-web";
   const installedWebApp = await findInstalledWindowsWebApp({ config, chrome, windowsEnvironment, interop });
   const officialPwaIdentity = installedWebApp
     ? interop.findPwaShortcutIdentity({ installedWebApp, windowsEnvironment })
@@ -102,6 +107,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     workingDirectory: config.workingDirectory,
     logPath,
     residentMonitor: false,
+    usesLoadingScreen,
     restartPersistence: "shortcut-on-disk",
     replacedExisting,
   };
@@ -132,6 +138,16 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     const hostBrowserConfigPath = path.win32.join(hostSupportDirectory, "browser-config.json");
     const hostBrowserErrorPath = path.win32.join(hostSupportDirectory, "browser-error.txt");
     const hostBrowserErrorPathWsl = path.join(hostSupportDirectoryWsl, "browser-error.txt");
+    const loadingProxyPath = path.join(supportDirectory, "loading-proxy.mjs");
+    const loadingConfigPath = path.join(supportDirectory, "loading-config.json");
+    const loadingIconPath = path.join(supportDirectory, "loading-whale.png");
+    const loadingProxyService = usesLoadingScreen ? {
+      executable: config.nodePath,
+      arguments: [loadingProxyPath, loadingConfigPath],
+      path: directService.path,
+      serviceKind: "loading-proxy",
+      nodeCompileCachePath: directService.nodeCompileCachePath,
+    } : null;
     const storedConfig = {
       generatedBy: GENERATED_BY,
       configVersion: CONFIG_VERSION,
@@ -141,7 +157,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       url: config.url,
       serviceCommand: config.serviceCommand,
       serviceShell: config.serviceShell,
-      directService,
+      directService: loadingProxyService || directService,
       workingDirectory: config.workingDirectory,
       readyHost: config.readyHost,
       readyPort: config.readyPort,
@@ -167,6 +183,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       chromePath: chrome.executable,
       chromeProfilePath,
       launchMode: installedWebApp ? "installed-pwa" : "url-app",
+      loadingMode: usesLoadingScreen,
       pwaLauncherPath: installedWebApp?.launcherPath ?? null,
       pwaArguments: installedWebApp?.arguments ?? [],
       appUserModelId,
@@ -177,6 +194,24 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       browserPidPath: path.win32.join(hostSupportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,
     };
+    const loadingConfig = usesLoadingScreen ? {
+      generatedBy: GENERATED_BY,
+      configVersion: CONFIG_VERSION,
+      platform: "wsl",
+      name: config.name,
+      url: config.url,
+      serviceCommand: config.serviceCommand,
+      directService,
+      workingDirectory: config.workingDirectory,
+      readyHost: config.readyHost,
+      readyPort: config.readyPort,
+      timeoutSeconds: config.timeoutSeconds,
+      minimumLoadingMilliseconds: 900,
+      readyPath: path.join(stateDirectory, "loading.ready"),
+      errorPath: path.join(stateDirectory, "loading-error.txt"),
+      loadingIconPath,
+      logPath,
+    } : null;
     const launchConfig = {
       generatedBy: GENERATED_BY,
       configVersion: CONFIG_VERSION,
@@ -189,6 +224,11 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
 
     await writeText(path.join(stagingDirectory, "config.json"), `${JSON.stringify(storedConfig, null, 2)}\n`);
     await writeText(path.join(stagingDirectory, "supervisor.mjs"), renderSupervisor());
+    if (loadingConfig) {
+      await writeText(path.join(stagingDirectory, "loading-proxy.mjs"), renderMacOnDemandProxy());
+      await writeText(path.join(stagingDirectory, "loading-config.json"), `${JSON.stringify(loadingConfig, null, 2)}\n`);
+      await copyFile(bundledLoadingIcon, path.join(stagingDirectory, "loading-whale.png"));
+    }
     const wslArguments = ["--distribution", config.wslDistro];
     if (config.wslUser) wslArguments.push("--user", config.wslUser);
     wslArguments.push("--exec", config.nodePath, path.join(supportDirectory, "supervisor.mjs"));
@@ -312,6 +352,17 @@ export async function inspectWslRestartPersistence(config, interop = defaultInte
     ]);
   } catch (error) {
     return { name: "重启后桌面启动", ok: false, detail: `无法读取 Windows/WSL 启动配置：${error.message}` };
+  }
+  if (storedConfig.directService?.serviceKind === "loading-proxy") {
+    const loadingPaths = [
+      path.join(supportDirectory, "loading-proxy.mjs"),
+      path.join(supportDirectory, "loading-config.json"),
+      path.join(supportDirectory, "loading-whale.png"),
+    ];
+    const loadingExistence = await Promise.all(loadingPaths.map(pathExists));
+    if (!loadingExistence.every(Boolean)) {
+      return { name: "重启后桌面启动", ok: false, detail: `WSL 小鲸鱼 loading 启动产物不完整：缺少 ${loadingPaths.filter((_, index) => !loadingExistence[index]).join("、")}` };
+    }
   }
   if (!(await pathExists(storedConfig.nodePath))) {
     return { name: "重启后桌面启动", ok: false, detail: `WSL 启动器保存的 Node.js 已不存在：${storedConfig.nodePath}` };

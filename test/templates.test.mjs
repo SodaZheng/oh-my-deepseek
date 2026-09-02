@@ -3,6 +3,7 @@ import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
 import { renderMacInfoPlist, renderMacLaunchAgent, renderMacLauncher, renderMacMonitor } from "../src/templates/macos.mjs";
 import { renderMacNativeMonitorSource } from "../src/templates/macos-native-monitor.mjs";
+import { renderMacLoadingDocument, renderMacLoadingOverlayBody, renderMacLoadingOverlayHead } from "../src/templates/macos-loading.mjs";
 import { renderMacOnDemandActivatorSource, renderMacOnDemandProxy } from "../src/templates/macos-on-demand.mjs";
 import { renderMacManagedLaunchAgent, renderMacOnDemandLaunchAgent, renderMacServiceManagerInfo, renderMacServiceManagerSource } from "../src/templates/macos-service-manager.mjs";
 import { renderSupervisor } from "../src/templates/supervisor.mjs";
@@ -92,6 +93,8 @@ test("macOS on-demand templates use socket activation without an idle process", 
     host: "127.0.0.1",
     port: 3080,
   });
+  const loadingDocument = renderMacLoadingDocument();
+  const loadingOverlay = renderMacLoadingOverlayHead() + renderMacLoadingOverlayBody();
   assert.match(activator, /launch_activate_socket/);
   assert.match(activator, /first request buffered until DSH readiness/);
   assert.match(activator, /while \(revealed \|\| \[deadline timeIntervalSinceNow\] > 0\)/);
@@ -99,6 +102,12 @@ test("macOS on-demand templates use socket activation without an idle process", 
   assert.match(proxy, /OMD_LISTEN_FD/);
   assert.match(proxy, /serviceKind !== "dsh-web"/);
   assert.match(proxy, /consecutiveSuccesses >= 2/);
+  assert.match(proxy, /__omd_loading_icon/);
+  assert.match(proxy, /injectLoadingOverlay/);
+  assert.match(loadingDocument, /omd-whale-float/);
+  assert.match(loadingDocument, /__OMD_APP_NAME__ 正在启动/);
+  assert.match(loadingOverlay, /omd-launch--leaving/);
+  assert.match(loadingOverlay, /prefers-reduced-motion/);
   assert.match(launchAgent, /<key>Sockets<\/key>/);
   assert.match(launchAgent, /<key>BundleProgram<\/key>/);
   assert.doesNotMatch(launchAgent, /<key>RunAtLoad<\/key>|<key>KeepAlive<\/key>/);
@@ -189,6 +198,8 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /DevToolsActivePort/);
   assert.match(browserHost, /Get-TargetSnapshot/);
   assert.match(browserHost, /function Test-HttpService/);
+  assert.match(browserHost, /function Test-LaunchSurface/);
+  assert.match(browserHost, /id="omd-launch"/);
   assert.match(browserHost, /__DSH_BOOT__/);
   assert.match(browserHost, /ConvertFrom-Json/);
   assert.match(browserHost, /Entries\.Count -eq 0/);
@@ -264,6 +275,7 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.doesNotMatch(browserHost, /--window-position=/);
   assert.doesNotMatch(browserHost, /--window-size=/);
   assert.match(browserHost, /function Run-BrowserLifecycle \{[\s\S]*Wait-ForHostService \$ServiceDeadline[\s\S]*Start-HostChrome/);
+  assert.match(browserHost, /Config\.loadingMode[\s\S]*Wait-ForLaunchSurface/);
   assert.doesNotMatch(browserHost, /Preparing%20Chrome%20Runtime|--window-position=-10000,-10000|function Open-AppWindow/);
   assert.match(supervisor, /windows-host-browser/);
   assert.match(supervisor, /config\.directService\?\.executable/);

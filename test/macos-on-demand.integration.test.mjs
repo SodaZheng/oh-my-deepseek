@@ -10,7 +10,7 @@ import { renderMacOnDemandActivatorSource, renderMacOnDemandProxy } from "../src
 import { renderMacOnDemandLaunchAgent } from "../src/templates/macos-service-manager.mjs";
 import { pathExists } from "../src/utils.mjs";
 
-test("macOS on-demand proxy starts DSH only after activation and releases it on exit", { skip: process.platform === "win32", timeout: 20_000 }, async () => {
+test("loading proxy starts DSH only after activation and releases it on exit", { skip: process.platform === "win32", timeout: 20_000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "oh-my-deepseek-on-demand-"));
   const proxyPath = path.join(root, "on-demand-proxy.mjs");
   const servicePath = path.join(root, "fake-dsh.mjs");
@@ -19,25 +19,30 @@ test("macOS on-demand proxy starts DSH only after activation and releases it on 
   const errorPath = path.join(root, "error.txt");
   const stoppedPath = path.join(root, "stopped");
   const logPath = path.join(root, "on-demand.log");
+  const port = await reservePort();
   await writeFile(proxyPath, renderMacOnDemandProxy());
   await writeFakeDsh(servicePath, stoppedPath);
-  await writeFile(configPath, JSON.stringify(proxyConfig({ root, servicePath, readyPath, errorPath, stoppedPath, logPath, url: "http://127.0.0.1:3080/" })));
+  await writeFile(configPath, JSON.stringify(proxyConfig({ root, servicePath, readyPath, errorPath, stoppedPath, logPath, url: `http://127.0.0.1:${port}/` })));
 
-  const listener = net.createServer();
-  listener.listen(0, "127.0.0.1");
-  await once(listener, "listening");
-  const address = listener.address();
-  const port = typeof address === "object" && address ? address.port : 0;
-  const descriptor = listener._handle.fd;
+  const proxyEnvironment = { ...process.env };
+  delete proxyEnvironment.OMD_LISTEN_FD;
   const proxy = spawn(process.execPath, [proxyPath, configPath], {
-    stdio: ["ignore", "ignore", "ignore", descriptor],
-    env: { ...process.env, OMD_LISTEN_FD: "3" },
+    stdio: "ignore",
+    env: proxyEnvironment,
   });
-  listener.close();
 
   try {
-    const response = await waitForHttp(`http://127.0.0.1:${port}/`, 10_000);
+    const publicUrl = `http://127.0.0.1:${port}/`;
+    const loading = await waitForHttp(publicUrl, 3000);
+    assert.match(loading, /id="omd-launch"/);
+    assert.match(loading, /\/__omd_loading_icon/);
+    const iconResponse = await fetch(`${publicUrl}__omd_loading_icon`);
+    assert.equal(iconResponse.headers.get("content-type"), "image/png");
+    await waitForReady(publicUrl, 10_000);
+    const response = await fetch(`${publicUrl}?__omd_launch=1`, { headers: { accept: "text/html" } }).then((value) => value.text());
     assert.match(response, /__DSH_BOOT__/);
+    assert.match(response, /id="omd-launch"/);
+    assert.match(response, /omd-launch--leaving/);
     await waitForPath(readyPath, 3000);
     assert.equal(await pathExists(readyPath), true, await readText(logPath));
     proxy.kill("SIGTERM");
@@ -137,12 +142,16 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     await waitFor(() => processMatching(appExecutable), 3000);
     const initialAppPid = processIdMatching(appExecutable);
 
-    const htmlPromise = waitForHttp(`http://127.0.0.1:${port}/`, 10_000);
+    const publicUrl = `http://127.0.0.1:${port}/`;
+    const loadingHtml = await waitForHttp(publicUrl, 10_000);
+    assert.match(loadingHtml, /id="omd-launch"/);
     await delay(300);
     assert.equal(await pathExists(hiddenPath), false, "on-demand launcher hid the whole App and destabilized its Dock identity");
     assert.equal(await pathExists(unhiddenPath), false, "on-demand launcher toggled App visibility before readiness");
-    const html = await htmlPromise;
+    await waitForReady(publicUrl, 10_000);
+    const html = await fetch(`${publicUrl}?__omd_launch=1`, { headers: { accept: "text/html" } }).then((value) => value.text());
     assert.match(html, /__DSH_BOOT__/);
+    assert.match(html, /id="omd-launch"/);
     await waitForPath(readyPath, 3000);
     assert.equal(processIdMatching(appExecutable), initialAppPid, "App process changed during readiness handoff");
     assert.equal(await pathExists(hiddenPath), false, "App received a hide event during startup");
@@ -150,7 +159,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     assert.equal(await pathExists(errorPath), false, await readText(errorPath));
     await delay(2500);
     assert.equal(readLaunchState(domain, label), "running", "ready App was stopped by the startup timeout");
-    assert.match(await waitForHttp(`http://127.0.0.1:${port}/`, 3000), /__DSH_BOOT__/);
+    assert.match(await fetch(`${publicUrl}?__omd_launch=1`, { headers: { accept: "text/html" } }).then((value) => value.text()), /__DSH_BOOT__/);
 
     spawnSync("/usr/bin/pkill", ["-TERM", "-f", `^${appExecutable}`], { stdio: "ignore" });
     await waitFor(() => !processMatching(activatorPath), 7000);
@@ -168,9 +177,12 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
 });
 
 function proxyConfig({ root, servicePath, readyPath, errorPath, logPath, url }) {
+  const publicUrl = new URL(url);
   return {
     name: "On Demand Test",
     url,
+    readyHost: publicUrl.hostname,
+    readyPort: Number(publicUrl.port),
     serviceCommand: "dsh web --no-open",
     directService: {
       executable: process.execPath,
@@ -181,8 +193,10 @@ function proxyConfig({ root, servicePath, readyPath, errorPath, logPath, url }) 
     },
     workingDirectory: root,
     timeoutSeconds: 10,
+    minimumLoadingMilliseconds: 100,
     readyPath,
     errorPath,
+    loadingIconPath: path.resolve("assets/windows-icon-master-v2.png"),
     logPath,
   };
 }
@@ -205,12 +219,24 @@ async function waitForHttp(url, timeoutMilliseconds) {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(500) });
+      const response = await fetch(url, { headers: { accept: "text/html" }, signal: AbortSignal.timeout(500) });
       if (response.ok) return response.text();
     } catch {}
     await delay(50);
   }
   assert.fail(`proxy did not respond: ${url}`);
+}
+
+async function waitForReady(publicUrl, timeoutMilliseconds) {
+  const deadline = Date.now() + timeoutMilliseconds;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${publicUrl}__omd_ready`, { signal: AbortSignal.timeout(500) });
+      if (response.ok) return;
+    } catch {}
+    await delay(50);
+  }
+  assert.fail(`proxy did not become ready: ${publicUrl}`);
 }
 
 async function reservePort() {

@@ -12,18 +12,26 @@ import { renderWindowsHiddenLauncher, renderWindowsNativeLauncherSource, renderW
 test("creates Windows support files and a desktop shortcut", { skip: process.platform !== "win32" }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "oh-my-deepseek-test-"));
   const fakeChrome = path.join(root, "chrome.exe");
+  const fakeDsh = path.join(root, "dsh.ps1");
   const shortcutDirectory = path.join(root, "Desktop");
   await writeFile(fakeChrome, "test executable placeholder");
+  await writeFile(fakeDsh, "exit 0\n");
+  const testEnvironment = {
+    ...process.env,
+    LOCALAPPDATA: path.join(root, "LocalAppData"),
+    USERPROFILE: root,
+    PATH: `${root}${path.delimiter}${process.env.PATH}`,
+  };
 
   const config = normalizeCreateOptions(
     { name: "Test Harness", output: shortcutDirectory, cwd: root },
-    { platform: "win32", cwd: root },
+    { platform: "win32", cwd: root, env: testEnvironment },
   );
   config.homeDirectory = root;
   const result = await createWindowsLauncher(
     config,
     { executable: fakeChrome, icon: fakeChrome },
-    { LOCALAPPDATA: path.join(root, "LocalAppData"), USERPROFILE: root },
+    testEnvironment,
   );
 
   assert.equal(result.replacedExisting, false);
@@ -34,6 +42,9 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(await pathExists(path.join(result.supportDirectory, "window-state.ps1")), false);
   assert.equal(await pathExists(path.join(result.supportDirectory, "browser-host.ps1")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "browser-config.json")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "loading-proxy.mjs")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "loading-config.json")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "loading-whale.png")), true);
   assert.equal(result.restartPersistence, "shortcut-on-disk");
   const hiddenLauncher = await readFile(path.join(result.supportDirectory, "launcher.js"), "utf8");
   assert.notEqual(hiddenLauncher.charCodeAt(0), 0xfeff);
@@ -43,8 +54,15 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(storedConfig.generatedBy, "oh-my-deepseek");
   assert.equal(storedConfig.launchMode, "windows-host-browser");
   assert.equal(storedConfig.hostBrowserScriptPath, path.join(result.supportDirectory, "browser-host.ps1"));
+  assert.equal(storedConfig.directService.serviceKind, "loading-proxy");
   assert.equal(result.residentMonitor, false);
   assert.equal(result.windowGate, true);
+  assert.equal(result.usesLoadingScreen, true);
+  const generatedBrowserConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "browser-config.json"), "utf8"));
+  assert.equal(generatedBrowserConfig.loadingMode, true);
+  const generatedLoadingConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "loading-config.json"), "utf8"));
+  assert.equal(generatedLoadingConfig.platform, "win32");
+  assert.equal(generatedLoadingConfig.directService.serviceKind, "dsh-web");
 
   const browserHostPath = path.join(result.supportDirectory, "browser-host.ps1");
   const shortcutScriptPath = path.join(result.supportDirectory, "create-shortcut.ps1");
@@ -204,7 +222,7 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   const recreated = await createWindowsLauncher(
     config,
     { executable: fakeChrome, icon: fakeChrome },
-    { LOCALAPPDATA: path.join(root, "LocalAppData"), USERPROFILE: root },
+    testEnvironment,
   );
   assert.equal(recreated.replacedExisting, true);
   assert.equal(await pathExists(staleSupportFile), false);

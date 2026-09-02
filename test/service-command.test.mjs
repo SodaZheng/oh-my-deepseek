@@ -23,6 +23,11 @@ test("resolves a Node CLI shebang to the pinned Node executable", async () => {
   assert.equal(directService.executable, process.execPath);
   const resolvedExecutable = await realpath(executable);
   assert.deepEqual(directService.arguments, [resolvedExecutable, "web", "--no-open"]);
+  assert.deepEqual(directService.dshWebLaunch, {
+    kind: "argv",
+    prefixArguments: [resolvedExecutable],
+    arguments: ["web", "--no-open"],
+  });
   assert.deepEqual(directService.warmupArguments, [resolvedExecutable, "web", "--help"]);
 });
 
@@ -48,5 +53,29 @@ test("resolves a Windows PowerShell command shim without loading user profiles",
   ]);
   assert.equal(directService.arguments[6], String.raw`C:\Tools\dsh.ps1`);
   assert.deepEqual(directService.arguments.slice(7), ["web", "--no-open"]);
+  assert.deepEqual(directService.dshWebLaunch, {
+    kind: "argv",
+    prefixArguments: [
+      "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", String.raw`C:\Tools\dsh.ps1`,
+    ],
+    arguments: ["web", "--no-open"],
+  });
   assert.deepEqual(directService.warmupArguments.slice(-2), ["web", "--help"]);
+
+  await writeFile(
+    fakePowerShell,
+    "#!/bin/sh\nprintf '%s' '{\"servicePath\":\"C:\\\\Tools\\\\dsh.cmd\",\"commandType\":\"Application\",\"powerShellPath\":\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\"}'\n",
+    { mode: 0o755 },
+  );
+  const commandShim = resolveDirectWindowsService({
+    serviceCommand: "dsh web --no-open",
+    servicePath,
+    nodePath: String.raw`C:\Program Files\nodejs\node.exe`,
+  }, { ...process.env, PATH: servicePath });
+  assert.deepEqual(commandShim.dshWebLaunch, {
+    kind: "powershell-command",
+    prefixArguments: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"],
+    commandPath: String.raw`C:\Tools\dsh.cmd`,
+    arguments: ["web", "--no-open"],
+  });
 });

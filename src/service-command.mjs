@@ -36,6 +36,7 @@ export async function resolveDirectPosixService(config) {
       arguments: [nodeScript, ...arguments_],
       path: config.servicePath,
       serviceKind: isDshWeb ? "dsh-web" : "generic",
+      dshWebLaunch: isDshWeb ? { kind: "argv", prefixArguments: [nodeScript], arguments: arguments_ } : null,
       warmupArguments: isDshWeb ? [nodeScript, "web", "--help"] : null,
     };
   }
@@ -45,6 +46,7 @@ export async function resolveDirectPosixService(config) {
     arguments: arguments_,
     path: config.servicePath,
     serviceKind: isDshWeb ? "dsh-web" : "generic",
+    dshWebLaunch: isDshWeb ? { kind: "argv", prefixArguments: [], arguments: arguments_ } : null,
     warmupArguments: isDshWeb ? ["web", "--help"] : null,
   };
 }
@@ -81,6 +83,7 @@ export function resolveDirectWindowsService(config, env = process.env) {
       arguments: arguments_,
       path: config.servicePath,
       serviceKind: isDshWeb ? "dsh-web" : "generic",
+      dshWebLaunch: isDshWeb ? { kind: "argv", prefixArguments: [], arguments: arguments_ } : null,
       warmupArguments: isDshWeb ? ["web", "--help"] : null,
     };
   }
@@ -90,6 +93,7 @@ export function resolveDirectWindowsService(config, env = process.env) {
       arguments: [discovered.servicePath, ...arguments_],
       path: config.servicePath,
       serviceKind: isDshWeb ? "dsh-web" : "generic",
+      dshWebLaunch: isDshWeb ? { kind: "argv", prefixArguments: [discovered.servicePath], arguments: arguments_ } : null,
       warmupArguments: isDshWeb ? [discovered.servicePath, "web", "--help"] : null,
     };
   }
@@ -106,6 +110,20 @@ export function resolveDirectWindowsService(config, env = process.env) {
     arguments: renderInvocation(arguments_),
     path: config.servicePath,
     serviceKind: isDshWeb ? "dsh-web" : "generic",
+    dshWebLaunch: isDshWeb
+      ? (extension === ".ps1"
+        ? {
+            kind: "argv",
+            prefixArguments: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", discovered.servicePath],
+            arguments: arguments_,
+          }
+        : {
+            kind: "powershell-command",
+            prefixArguments: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"],
+            commandPath: discovered.servicePath,
+            arguments: arguments_,
+          })
+      : null,
     warmupArguments: isDshWeb ? renderInvocation(["web", "--help"]) : null,
   };
 }

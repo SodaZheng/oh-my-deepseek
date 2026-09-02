@@ -1,6 +1,7 @@
 import { copyFile, mkdtemp, readFile, rename } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import {
@@ -8,9 +9,12 @@ import {
   renderWindowsShortcutScript,
 } from "../templates/windows.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
+import { renderMacOnDemandProxy } from "../templates/macos-on-demand.mjs";
 import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
 import { resolveDirectWindowsService, warmDirectServiceCompileCache } from "../service-command.mjs";
 import { ensureDirectory, pathExists, removeExactTarget, writeText } from "../utils.mjs";
+
+const bundledLoadingIcon = fileURLToPath(new URL("../../assets/windows-icon-master-v2.png", import.meta.url));
 
 export async function createWindowsLauncher(config, chrome, env = process.env) {
   const localAppData = env.LOCALAPPDATA ?? path.join(config.homeDirectory || os.homedir(), "AppData", "Local");
@@ -27,6 +31,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
   const directService = resolvedDirectService
     ? { ...resolvedDirectService, nodeCompileCachePath: path.join(stateDirectory, "node-compile-cache") }
     : null;
+  const usesLoadingScreen = directService?.serviceKind === "dsh-web";
   const supportExists = await pathExists(supportDirectory);
   const shortcutExists = await pathExists(shortcutPath);
   const result = {
@@ -37,6 +42,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
     appUserModelId,
     residentMonitor: false,
     windowGate: true,
+    usesLoadingScreen,
     url: config.url,
     serviceCommand: config.serviceCommand,
     workingDirectory: config.workingDirectory,
@@ -68,6 +74,16 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
     const hostBrowserScriptPath = path.join(supportDirectory, "browser-host.ps1");
     const hostBrowserConfigPath = path.join(supportDirectory, "browser-config.json");
     const hostBrowserErrorPath = path.join(supportDirectory, "browser-error.txt");
+    const loadingProxyPath = path.join(supportDirectory, "loading-proxy.mjs");
+    const loadingConfigPath = path.join(supportDirectory, "loading-config.json");
+    const loadingIconPath = path.join(supportDirectory, "loading-whale.png");
+    const loadingProxyService = usesLoadingScreen ? {
+      executable: config.nodePath,
+      arguments: [loadingProxyPath, loadingConfigPath],
+      path: directService.path,
+      serviceKind: "loading-proxy",
+      nodeCompileCachePath: directService.nodeCompileCachePath,
+    } : null;
     const storedConfig = {
       generatedBy: GENERATED_BY,
       configVersion: CONFIG_VERSION,
@@ -76,7 +92,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       name: config.name,
       url: config.url,
       serviceCommand: config.serviceCommand,
-      directService,
+      directService: loadingProxyService || directService,
       workingDirectory: config.workingDirectory,
       readyHost: config.readyHost,
       readyPort: config.readyPort,
@@ -102,6 +118,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       chromePath: chrome.executable,
       chromeProfilePath: profileDirectory,
       launchMode: "url-app",
+      loadingMode: usesLoadingScreen,
       pwaLauncherPath: null,
       pwaArguments: [],
       appUserModelId,
@@ -112,6 +129,24 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       browserPidPath: path.join(supportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,
     };
+    const loadingConfig = usesLoadingScreen ? {
+      generatedBy: GENERATED_BY,
+      configVersion: CONFIG_VERSION,
+      platform: "win32",
+      name: config.name,
+      url: config.url,
+      serviceCommand: config.serviceCommand,
+      directService,
+      workingDirectory: config.workingDirectory,
+      readyHost: config.readyHost,
+      readyPort: config.readyPort,
+      timeoutSeconds: config.timeoutSeconds,
+      minimumLoadingMilliseconds: 900,
+      readyPath: path.join(stateDirectory, "loading.ready"),
+      errorPath: path.join(stateDirectory, "loading-error.txt"),
+      loadingIconPath,
+      logPath,
+    } : null;
     await writeText(path.join(stagingDirectory, "config.json"), `${JSON.stringify(storedConfig, null, 2)}\n`);
     await writeText(
       path.join(stagingDirectory, "launcher.js"),
@@ -125,6 +160,11 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
     await writeText(path.join(stagingDirectory, "supervisor.mjs"), renderSupervisor());
     await writeText(path.join(stagingDirectory, "browser-host.ps1"), withUtf8Bom(renderWindowsHostBrowser()));
     await writeText(path.join(stagingDirectory, "browser-config.json"), `${JSON.stringify(browserConfig, null, 2)}\n`);
+    if (loadingConfig) {
+      await writeText(path.join(stagingDirectory, "loading-proxy.mjs"), renderMacOnDemandProxy());
+      await writeText(path.join(stagingDirectory, "loading-config.json"), `${JSON.stringify(loadingConfig, null, 2)}\n`);
+      await copyFile(bundledLoadingIcon, path.join(stagingDirectory, "loading-whale.png"));
+    }
     await writeText(path.join(stagingDirectory, "create-shortcut.ps1"), withUtf8Bom(renderWindowsShortcutScript()));
     if (chrome.icon && path.extname(chrome.icon).toLowerCase() === ".ico") {
       await copyFile(chrome.icon, path.join(stagingDirectory, "app.ico"));
@@ -182,6 +222,17 @@ export async function inspectWindowsRestartPersistence(config, env = process.env
     storedConfig = JSON.parse(await readFile(path.join(supportDirectory, "config.json"), "utf8"));
   } catch (error) {
     return { name: "重启后桌面启动", ok: false, detail: `无法读取启动配置：${error.message}` };
+  }
+  if (storedConfig.directService?.serviceKind === "loading-proxy") {
+    const loadingPaths = [
+      path.join(supportDirectory, "loading-proxy.mjs"),
+      path.join(supportDirectory, "loading-config.json"),
+      path.join(supportDirectory, "loading-whale.png"),
+    ];
+    const loadingExistence = await Promise.all(loadingPaths.map(pathExists));
+    if (!loadingExistence.every(Boolean)) {
+      return { name: "重启后桌面启动", ok: false, detail: `小鲸鱼 loading 启动产物不完整：缺少 ${loadingPaths.filter((_, index) => !loadingExistence[index]).join("、")}` };
+    }
   }
   if (!(await pathExists(storedConfig.nodePath))) {
     return { name: "重启后桌面启动", ok: false, detail: `快捷方式保存的 Node.js 已不存在：${storedConfig.nodePath}` };

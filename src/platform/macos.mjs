@@ -36,6 +36,7 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
   const onDemandConfigPath = path.join(stateDirectory, "on-demand-config.json");
   const onDemandReadyPath = path.join(stateDirectory, "on-demand.ready");
   const onDemandErrorPath = path.join(stateDirectory, "on-demand-error.txt");
+  const loadingIconPath = path.join(stateDirectory, "loading-whale.png");
   const launchAgentLabel = `dev.ohmydeepseek.ondemand.v${MAC_ON_DEMAND_HELPER_VERSION}.${config.instanceId}`;
   const launchAgentPlistName = `${launchAgentLabel}.plist`;
   const legacyMonitorLabel = `dev.ohmydeepseek.monitor.${config.instanceId}`;
@@ -117,6 +118,7 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
     }
     await updateInstalledChromeWebAppIcons({ homeDirectory, appId: chromeAppId, iconPath: chrome.icon });
     await ensureDirectory(stateDirectory);
+    prepareMacLoadingIcon(chrome.icon, loadingIconPath);
     await writeText(onDemandProxyPath, renderMacOnDemandProxy());
     await writeText(onDemandSourcePath, renderMacOnDemandActivatorSource());
     await writeText(
@@ -144,6 +146,7 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
         onDemandProxyPath,
         onDemandReadyPath,
         onDemandErrorPath,
+        loadingIconPath,
         logPath,
       }, null, 2)}\n`,
     );
@@ -165,8 +168,10 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
         readyHost: config.readyHost,
         readyPort: config.readyPort,
         timeoutSeconds: config.timeoutSeconds,
+        minimumLoadingMilliseconds: 900,
         readyPath: onDemandReadyPath,
         errorPath: onDemandErrorPath,
+        loadingIconPath,
         logPath,
       }, null, 2)}\n`,
     );
@@ -616,6 +621,16 @@ function compileMacMonitor(sourcePath, binaryPath) {
     }
   }
   return false;
+}
+
+function prepareMacLoadingIcon(sourcePath, targetPath) {
+  if (!sourcePath) throw new Error("缺少 macOS 小鲸鱼图标，无法生成启动页");
+  const result = spawnSync("/usr/bin/sips", ["-z", "256", "256", "-s", "format", "png", sourcePath, "--out", targetPath], {
+    encoding: "utf8",
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`无法生成 macOS loading 小鲸鱼图标：${result.error?.message || result.stderr || result.stdout}`);
+  }
 }
 
 function compileMacServiceManager(sourcePath, binaryPath) {

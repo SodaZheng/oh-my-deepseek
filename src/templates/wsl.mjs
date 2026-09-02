@@ -714,6 +714,33 @@ function Test-HttpService {
   }
 }
 
+function Test-LaunchSurface {
+  $Response = $null
+  try {
+    $Response = $HttpClient.GetAsync([string]$Config.url).GetAwaiter().GetResult()
+    if (-not $Response.IsSuccessStatusCode) { return $false }
+    $ContentType = [string]$Response.Content.Headers.ContentType
+    if (-not $ContentType.Contains('text/html')) { return $true }
+    $Content = $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    return $Content.Contains('id="omd-launch"') -or
+      $Content.Contains('window.__DSH_BOOT__') -or
+      $Content.Contains('globalThis["__DSH_BOOT__"]') -or
+      $Content.Contains("globalThis['__DSH_BOOT__']")
+  } catch {
+    return $false
+  } finally {
+    if ($Response) { $Response.Dispose() }
+  }
+}
+
+function Wait-ForLaunchSurface([datetime]$Deadline) {
+  while ([datetime]::UtcNow -lt $Deadline) {
+    if (Test-LaunchSurface) { return }
+    Start-Sleep -Milliseconds 50
+  }
+  throw ("Windows 宿主机无法读取启动页 {0}" -f $Config.url)
+}
+
 function Wait-ForHostService([datetime]$Deadline) {
   $ConsecutiveSuccesses = 0
   while ([datetime]::UtcNow -lt $Deadline) {
@@ -799,7 +826,7 @@ function Wait-ForAppTarget([datetime]$Deadline) {
 
 function Run-BrowserLifecycle {
   $ServiceDeadline = [datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)
-  Wait-ForHostService $ServiceDeadline
+  if ($Config.loadingMode) { Wait-ForLaunchSurface $ServiceDeadline } else { Wait-ForHostService $ServiceDeadline }
   if ($Config.launchMode -eq 'installed-pwa') {
     $Handle = Start-PwaWindow ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30)))
     Wait-ForWindowToClose $Handle

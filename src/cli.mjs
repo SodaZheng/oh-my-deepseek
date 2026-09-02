@@ -79,6 +79,7 @@ function printCreateResult(result, asJson) {
     }
     else process.stdout.write("提示：未检测到该 URL 的已安装 Chrome Web App，将使用直接 Chrome 模式，Dock 显示 Chrome 图标。\n");
     process.stdout.write(`macOS 服务启动：${result.serviceLaunchMode === "direct" ? "固定入口直接执行" : "登录 shell 兼容模式"}\n`);
+    if (result.usesOnDemandLauncher) process.stdout.write("启动画面：小鲸鱼 loading，真实页面稳定后同窗淡出\n");
     if (result.compileCachePrepared) process.stdout.write("DSH 启动缓存：已在 create 阶段准备\n");
   } else if (result.platform === "wsl") {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
@@ -97,6 +98,7 @@ function printCreateResult(result, asJson) {
     }
     process.stdout.write(`Windows 任务栏身份：快捷方式与 App 窗口使用同一专属 ID\n`);
     if (result.compileCachePrepared) process.stdout.write(`DSH 首次启动缓存：已在 create 阶段准备\n`);
+    if (result.usesLoadingScreen) process.stdout.write("启动画面：小鲸鱼 loading，真实页面稳定后同窗淡出\n");
     process.stdout.write(`WSL 监督器目录：${result.supportDirectory}\n`);
     process.stdout.write(`Windows 桥接器目录：${result.hostSupportDirectory}\n`);
     process.stdout.write(result.usesOfficialPwaEntry
@@ -108,8 +110,9 @@ function printCreateResult(result, asJson) {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
     process.stdout.write(`启动文件目录：${result.supportDirectory}\n`);
     process.stdout.write(`Windows 服务启动：${result.serviceLaunchMode === "direct" ? "固定入口直接执行" : "PowerShell 兼容模式"}\n`);
-    process.stdout.write("Windows 窗口门：DSH 和页面稳定前保持隐藏；无登录常驻进程。\n");
+    process.stdout.write("Windows 窗口门：启动页首帧可显示前保持隐藏；无登录常驻进程。\n");
     if (result.compileCachePrepared) process.stdout.write("DSH 启动缓存：已在 create 阶段准备\n");
+    if (result.usesLoadingScreen) process.stdout.write("启动画面：小鲸鱼 loading，真实页面稳定后同窗淡出\n");
     process.stdout.write("重启持久性：快捷方式和启动依赖已保存到本机。\n");
   }
   process.stdout.write(`服务命令：${result.serviceCommand}\n`);
