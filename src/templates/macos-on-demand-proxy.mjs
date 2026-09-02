@@ -28,6 +28,8 @@ let serviceSpawnError = null;
 let shuttingDown = false;
 let backendPort = null;
 let backendReady = false;
+let browserLoadingServed = false;
+let handoffComplete = false;
 let startupFailure = null;
 
 mkdirSync(path.dirname(config.logPath), { recursive: true });
@@ -86,12 +88,26 @@ function handleRequest(request, response) {
     response.end();
     return;
   }
+  if (requestUrl.pathname === "/__omd_handoff_complete" && request.method === "POST") {
+    handoffComplete = true;
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
+    return;
+  }
+  if (requestUrl.pathname === "/__omd_handoff_ready") {
+    response.writeHead(handoffComplete ? 204 : 503, { "cache-control": "no-store" });
+    response.end();
+    return;
+  }
 
   const isDocument = request.method === "GET"
     && requestUrl.pathname === publicUrl.pathname
     && String(request.headers.accept || "").includes("text/html");
   const launchHandoff = requestUrl.searchParams.get("__omd_launch") === "1";
-  if (isDocument && !backendReady && !startupFailure) {
+  const isChromeDocument = isDocument && /Chrome\\\//i.test(String(request.headers["user-agent"] || ""));
+  const shouldServeBrowserLoading = isChromeDocument && !launchHandoff && !browserLoadingServed;
+  if (shouldServeBrowserLoading) browserLoadingServed = true;
+  if (isDocument && !launchHandoff && !startupFailure && (!backendReady || shouldServeBrowserLoading)) {
     const html = personalize(loadingTemplate);
     response.writeHead(200, {
       "content-type": "text/html; charset=utf-8",

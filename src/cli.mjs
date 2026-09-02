@@ -98,7 +98,8 @@ function printCreateResult(result, asJson) {
     }
     process.stdout.write(`Windows 任务栏身份：快捷方式与 App 窗口使用同一专属 ID\n`);
     if (result.compileCachePrepared) process.stdout.write(`DSH 首次启动缓存：已在 create 阶段准备\n`);
-    if (result.usesLoadingScreen) process.stdout.write("启动画面：小鲸鱼 loading，真实页面稳定后同窗淡出\n");
+    if (result.instantLoading) process.stdout.write("点击反馈：Windows 原生小鲸鱼 loading 立即显示，并行唤醒 WSL\n");
+    if (result.usesLoadingScreen) process.stdout.write("页面交接：真实页面稳定后无白屏接管 loading 窗口\n");
     process.stdout.write(`WSL 监督器目录：${result.supportDirectory}\n`);
     process.stdout.write(`Windows 桥接器目录：${result.hostSupportDirectory}\n`);
     process.stdout.write(result.usesOfficialPwaEntry
@@ -110,9 +111,10 @@ function printCreateResult(result, asJson) {
     process.stdout.write(`${prefix} Windows 快捷方式：${result.shortcutPath}\n`);
     process.stdout.write(`启动文件目录：${result.supportDirectory}\n`);
     process.stdout.write(`Windows 服务启动：${result.serviceLaunchMode === "direct" ? "固定入口直接执行" : "PowerShell 兼容模式"}\n`);
-    process.stdout.write("Windows 窗口门：启动页首帧可显示前保持隐藏；无登录常驻进程。\n");
+    process.stdout.write("Windows 窗口门：Chrome 页面完整稳定前在原生 loading 后保持隐藏；无登录常驻进程。\n");
     if (result.compileCachePrepared) process.stdout.write("DSH 启动缓存：已在 create 阶段准备\n");
-    if (result.usesLoadingScreen) process.stdout.write("启动画面：小鲸鱼 loading，真实页面稳定后同窗淡出\n");
+    if (result.instantLoading) process.stdout.write("点击反馈：Windows 原生小鲸鱼 loading 立即显示\n");
+    if (result.usesLoadingScreen) process.stdout.write("页面交接：真实页面稳定后无白屏接管 loading 窗口\n");
     process.stdout.write("重启持久性：快捷方式和启动依赖已保存到本机。\n");
   }
   process.stdout.write(`服务命令：${result.serviceCommand}\n`);

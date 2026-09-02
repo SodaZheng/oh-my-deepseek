@@ -6,7 +6,7 @@ const loadingStyles = `
   z-index: 2147483647;
   display: grid;
   place-items: center;
-  background: #343434;
+  background: #151517;
   color: rgba(255, 255, 255, 0.78);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   opacity: 1;
@@ -92,7 +92,7 @@ export function renderMacLoadingDocument() {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="color-scheme" content="dark" />
   <title>__OMD_APP_NAME__</title>
-  <style>html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #343434; }${loadingStyles}</style>
+  <style>html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #151517; }${loadingStyles}</style>
 </head>
 <body>
 ${loadingMarkup}
@@ -135,9 +135,14 @@ export function renderMacLoadingOverlayBody() {
   history.replaceState(history.state, '', current.pathname + current.search + current.hash);
   const overlay = document.getElementById('omd-launch');
   let stableFrames = 0;
+  let observer = null;
+  let fallbackInterval = null;
   const finish = () => {
     if (!overlay || overlay.classList.contains('omd-launch--leaving')) return;
     overlay.classList.add('omd-launch--leaving');
+    if (observer) observer.disconnect();
+    if (fallbackInterval) clearInterval(fallbackInterval);
+    fetch('/__omd_handoff_complete', { method: 'POST', cache: 'no-store', keepalive: true }).catch(() => {});
     setTimeout(() => {
       overlay.remove();
       document.getElementById('omd-launch-style')?.remove();
@@ -149,12 +154,18 @@ export function renderMacLoadingOverlayBody() {
     const ready = root && root.childElementCount > 0 && root.getBoundingClientRect().height > 80;
     stableFrames = ready ? stableFrames + 1 : 0;
     if (stableFrames >= 2) {
-      requestAnimationFrame(finish);
+      finish();
       return;
     }
-    requestAnimationFrame(inspect);
   };
-  requestAnimationFrame(inspect);
+  const inspectFrame = () => {
+    inspect();
+    if (!overlay?.classList.contains('omd-launch--leaving')) requestAnimationFrame(inspectFrame);
+  };
+  observer = new MutationObserver(inspect);
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  fallbackInterval = setInterval(inspect, 100);
+  requestAnimationFrame(inspectFrame);
   setTimeout(finish, 15000);
 })();
 </script>`;

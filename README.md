@@ -37,15 +37,15 @@ oh-my-deepseek doctor
 - 启动超时：45 秒
 - 服务启动：三平台都会在创建入口时解析简单命令，点击后直接执行并复用 Node 磁盘编译缓存，不常驻 DSH
 
-macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.app`，并在桌面创建快捷入口。它就是唯一的可见 App，可直接从 `~/Applications` 拖入 Dock。Windows 会把启动文件放在 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，并在桌面创建 `.lnk`。快捷方式通过无控制台的 Windows Script Host 启动 Node 监督器后立即退出，不再让 WScript 或 PowerShell 在整个 App 生命周期中保持运行；`launcher.js` 使用无 BOM 的纯 ASCII 内容，Unicode 路径和提示以 `\uXXXX` 表示，兼容经典 JScript 引擎。旧快捷方式需要重新运行一次 `omd` 或 `oh-my-deepseek create` 才能更新；命令会先删除本工具生成的旧入口和启动文件，再创建全新的入口。
+macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.app`，并在桌面创建快捷入口。它就是唯一的可见 App，可直接从 `~/Applications` 拖入 Dock。Windows 会把启动文件放在 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，并在桌面创建 `.lnk`。快捷方式直接启动无控制台的原生 `launcher.exe`：窗口先显示本地小鲸鱼 loading，再并行启动 Node 监督器，不需要等待 Node、DSH 或 WSL 初始化后才反馈。旧快捷方式需要重新运行一次 `omd` 或 `oh-my-deepseek create` 才能更新；命令会先删除本工具生成的旧入口和启动文件，再创建全新的入口。
 
-在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式。检测到 Chrome 已安装 PWA 时，工具仍用官方 `chrome_proxy.exe`、App ID 和原有 Chrome Profile 打开真实 PWA，因此登录、Cookie 和窗口能力不变；但桌面入口与开始菜单入口改用 Oh My DeepSeek 自己的无控制台 `launcher.exe`、专属 AppUserModelID 和 `app.ico`。最终 PWA 窗口会切换到同一个专属 ID。Windows 窗口门会在创建窗口前开始监听，确认第一个可见帧已经是小鲸鱼 loading 后再显示；DSH 完整就绪后，同一个窗口无白屏进入真实页面。新版不再安装 Windows 登录监视器；必须从 OMD 生成的桌面、开始菜单或已迁移任务栏入口启动。
+在 WSL 里执行同样的 `doctor` 和 `create` 命令即可自动进入 WSL 模式。检测到 Chrome 已安装 PWA 时，工具仍用官方 `chrome_proxy.exe`、App ID 和原有 Chrome Profile 打开真实 PWA，因此登录、Cookie 和窗口能力不变；但桌面入口与开始菜单入口改用 Oh My DeepSeek 自己的无控制台 `launcher.exe`、专属 AppUserModelID 和 `app.ico`。点击后这个 Windows 原生启动器会先显示 loading，同时在后台唤醒 WSL；Chrome/PWA 在窗口门后完成 DSH 页面初始化，随后按 loading 窗口的同一位置和尺寸显示，并用相同任务栏身份完成无白屏交接。新版不再安装 Windows 登录监视器；必须从 OMD 生成的桌面、开始菜单或已迁移任务栏入口启动。
 
 如果找不到 Chrome 官方 PWA 快捷方式，才回退到原生 `launcher.exe` 入口。两条路径都不再经过 Windows Script Host。生成入口时工具会提前解析 `dsh` 等简单服务命令的绝对可执行路径和参数；点击时监督器直接执行该入口，跳过交互式登录 shell、启动脚本和重复的命令发现。macOS、原生 Windows 和 WSL 都会为默认 `dsh web --no-open` 准备 Node 磁盘编译缓存，把可以提前完成的模块编译移到 `create` 阶段。宿主机无需重复安装 Node.js 或 DSH，也不会安装常驻预热进程。
 
 macOS 会继续使用 Chrome 官方 `app_mode_loader` 和唯一的可见 App。`SMAppService` 只向 launchd 注册一个按需 socket：空闲时由系统持有端口，没有 OMD、Node 或 DSH 用户进程。点击官方 App 后，第一次 HTTP 连接才拉起原生按需启动器；它不再 hide/unhide 整个 App，而是缓冲第一次页面请求，在内部随机端口启动 DSH，并通过本机 TCP 代理保留原 URL。完整页面与插件清单连续稳定后，同一个请求在同一个窗口中继续完成，不关闭、不重开、不切换 Dock 身份。关闭 App 后代理、DSH 和启动器全部退出。
 
-macOS、Windows 和 WSL 的首次请求都会立即显示同一套 Harness 暗色小鲸鱼 loading：macOS 使用当前 `icon.icns` 转出的本地 PNG，Windows/WSL 使用随包分发的同源 PNG；动效是轻微漂浮和低透明气泡，最短展示 900ms。进入真实 DSH 页面时会注入同款遮罩，等 `#root` 连续两帧完成布局后再用 240ms 淡出，因此中间没有白屏；系统启用“减少动态效果”时会自动停用动画。
+macOS、Windows 和 WSL 都使用同一套 Harness 暗色小鲸鱼 loading。背景使用 DSH 暗色启动页的 `#151517`。Windows/WSL 的第一帧来自已编译的本机窗口，所以不依赖 WSL、Node 或本地端口，点击后即可出现；它读取上次真实 DSH 窗口的外层尺寸并在主屏工作区居中。原生动效使用高精度、时间驱动的 60fps 重绘，文字和省略点保留固定宽度，避免 WinForms 普通定时器造成的跳帧和横向抖动。真实 Chrome/PWA 在背后等待 `#root` 稳定，再接过同一位置、尺寸和任务栏身份。页面遮罩用 240ms 淡出；系统启用“减少动态效果”时，网页和 Windows 原生 loading 都会自动停用动画。
 
 该模式会由 launchd 保留配置 URL 的端口（默认 `127.0.0.1:3080`），但不会为此保留用户进程或占用 CPU/内存。若要在终端另开一个 DSH，请显式使用其他端口，例如 `dsh web --port 3081`。
 
@@ -69,7 +69,7 @@ oh-my-deepseek doctor
 oh-my-deepseek create
 ```
 
-WSL 模式保留与原生桌面入口一致的行为：静默启动、自定义图标、无地址栏 Chrome App、全局单实例、重复点击激活现有窗口、关闭窗口后强制释放 WSL 内的配置端口。Chrome 可以先显示本地 loading，但真实 DSH 页面仍只会在页面和插件清单完整可用后接管同一个窗口。
+WSL 模式保留与原生桌面入口一致的行为：静默启动、自定义图标、无地址栏 Chrome App、全局单实例、重复点击激活现有窗口、关闭窗口后强制释放 WSL 内的配置端口。Windows 原生 loading 会在 WSL 冷启动前先出现；真实 DSH 页面仍只会在页面和插件清单完整可用、客户端根节点完成布局后接管可见窗口。
 
 `dsh web --no-open`、`npm run dev` 以及只包含普通参数和引号的命令会使用直接执行快路径，并在应用状态目录复用 Node 磁盘编译缓存，减少后续冷启动重复解析模块的开销。对于默认的 `dsh web --no-open`，`create` 阶段会通过一次无服务端口的帮助命令提前填充编译缓存，把模块编译从第一次桌面点击移到入口生成时完成。`--no-open` 避免 DSH 自己再打开一个普通浏览器窗口，最终窗口统一由本工具管理。包含管道、重定向、变量展开、命令替换、通配符或环境变量赋值的复杂命令会自动回退到原有 shell 兼容路径，避免改变命令语义。三平台都只在点击后启动 DSH，空闲时不占用 DSH 的 CPU 或内存；快路径只保留少量磁盘缓存。
 

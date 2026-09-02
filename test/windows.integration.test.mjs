@@ -37,7 +37,9 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(result.replacedExisting, false);
   assert.equal(await pathExists(result.shortcutPath), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.ps1")), false);
-  assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.js")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.js")), false);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.exe")), true);
+  assert.equal(await pathExists(path.join(result.supportDirectory, "launcher.cs")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "supervisor.mjs")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "window-state.ps1")), false);
   assert.equal(await pathExists(path.join(result.supportDirectory, "browser-host.ps1")), true);
@@ -46,10 +48,13 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(await pathExists(path.join(result.supportDirectory, "loading-config.json")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "loading-whale.png")), true);
   assert.equal(result.restartPersistence, "shortcut-on-disk");
-  const hiddenLauncher = await readFile(path.join(result.supportDirectory, "launcher.js"), "utf8");
-  assert.notEqual(hiddenLauncher.charCodeAt(0), 0xfeff);
-  assert.equal(/[^\x00-\x7f]/.test(hiddenLauncher), false);
-  assert.doesNotMatch(hiddenLauncher, /powershell\.exe/i);
+  const loadingLauncher = await readFile(path.join(result.supportDirectory, "launcher.cs"), "utf8");
+  assert.match(loadingLauncher, /OhMyDeepSeekLoadingLauncher/);
+  assert.match(loadingLauncher, /Application\.Run\(form\)/);
+  assert.match(loadingLauncher, /HandoffReadyPath/);
+  assert.match(loadingLauncher, /TopMost = true/);
+  assert.match(loadingLauncher, /System\.Threading\.Timer/);
+  assert.match(loadingLauncher, /Color\.FromArgb\(21, 21, 23\)/);
   const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
   assert.equal(storedConfig.generatedBy, "oh-my-deepseek");
   assert.equal(storedConfig.launchMode, "windows-host-browser");
@@ -57,9 +62,12 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(storedConfig.directService.serviceKind, "loading-proxy");
   assert.equal(result.residentMonitor, false);
   assert.equal(result.windowGate, true);
+  assert.equal(result.instantLoading, true);
   assert.equal(result.usesLoadingScreen, true);
   const generatedBrowserConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "browser-config.json"), "utf8"));
   assert.equal(generatedBrowserConfig.loadingMode, true);
+  assert.match(generatedBrowserConfig.loadingBoundsPath, /loading-window\.json$/);
+  assert.match(generatedBrowserConfig.launcherHandoffPath, /launcher-handoff\.ready$/);
   const generatedLoadingConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "loading-config.json"), "utf8"));
   assert.equal(generatedLoadingConfig.platform, "win32");
   assert.equal(generatedLoadingConfig.directService.serviceKind, "dsh-web");
@@ -96,8 +104,8 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
     windowsHide: true,
   });
   assert.equal(shortcutResult.status, 0, shortcutResult.stderr || shortcutResult.stdout);
-  assert.match(shortcutResult.stdout, /wscript\.exe/i);
-  assert.match(shortcutResult.stdout, /launcher\.js/i);
+  assert.match(shortcutResult.stdout, /launcher\.exe/i);
+  assert.doesNotMatch(shortcutResult.stdout, /wscript\.exe/i);
 
   const appUserModelId = "OpenAI.OhMyDeepSeek.TestHarness";
   const identityResult = spawnSync(

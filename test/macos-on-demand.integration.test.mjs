@@ -39,10 +39,17 @@ test("loading proxy starts DSH only after activation and releases it on exit", {
     const iconResponse = await fetch(`${publicUrl}__omd_loading_icon`);
     assert.equal(iconResponse.headers.get("content-type"), "image/png");
     await waitForReady(publicUrl, 10_000);
+    const forcedBrowserLoading = await fetch(publicUrl, {
+      headers: { accept: "text/html", "user-agent": "Mozilla/5.0 Chrome/151.0.0.0" },
+    }).then((value) => value.text());
+    assert.match(forcedBrowserLoading, /id="omd-launch"/);
     const response = await fetch(`${publicUrl}?__omd_launch=1`, { headers: { accept: "text/html" } }).then((value) => value.text());
     assert.match(response, /__DSH_BOOT__/);
     assert.match(response, /id="omd-launch"/);
     assert.match(response, /omd-launch--leaving/);
+    assert.equal((await fetch(`${publicUrl}__omd_handoff_ready`)).status, 503);
+    assert.equal((await fetch(`${publicUrl}__omd_handoff_complete`, { method: "POST" })).status, 204);
+    assert.equal((await fetch(`${publicUrl}__omd_handoff_ready`)).status, 204);
     await waitForPath(readyPath, 3000);
     assert.equal(await pathExists(readyPath), true, await readText(logPath));
     proxy.kill("SIGTERM");

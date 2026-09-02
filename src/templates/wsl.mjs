@@ -6,6 +6,9 @@ export function renderWindowsHostBrowser() {
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
 $Config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $DevToolsPortFile = Join-Path $Config.chromeProfilePath 'DevToolsActivePort'
 Add-Type -AssemblyName System.Net.Http
@@ -385,6 +388,13 @@ public static class OmdChromeWindow {
   }
 
   public static bool IsAlive(long handle) { return IsWindow(new IntPtr(handle)); }
+  public static int GetProcessId(long handle) {
+    var hwnd = new IntPtr(handle);
+    if (!IsWindow(hwnd)) return 0;
+    uint processId;
+    GetWindowThreadProcessId(hwnd, out processId);
+    return processId > int.MaxValue ? 0 : (int)processId;
+  }
   public static bool Activate(long handle) {
     var hwnd = new IntPtr(handle);
     if (!IsWindow(hwnd)) return false;
@@ -415,6 +425,11 @@ public static class OmdChromeWindow {
     var x = info.work.left + (workWidth - width) / 2;
     var y = info.work.top + (workHeight - height) / 2;
     return SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, 0x0004 | 0x0010);
+  }
+  public static bool PositionWithBounds(long handle, int x, int y, int requestedWidth, int requestedHeight) {
+    var hwnd = new IntPtr(handle);
+    if (!IsWindow(hwnd) || requestedWidth < 320 || requestedHeight < 240) return false;
+    return SetWindowPos(hwnd, IntPtr.Zero, x, y, requestedWidth, requestedHeight, 0x0004 | 0x0010);
   }
   public static bool Close(long handle) {
     var hwnd = new IntPtr(handle);
@@ -579,6 +594,17 @@ function Save-WindowSize([long]$Handle) {
 }
 
 function Restore-WindowSizeAndCenter([long]$Handle) {
+  if ($Config.loadingBoundsPath -and (Test-Path -LiteralPath $Config.loadingBoundsPath -PathType Leaf)) {
+    try {
+      $LoadingBounds = Get-Content -LiteralPath $Config.loadingBoundsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      $LoadingWidth = [int]$LoadingBounds.width
+      $LoadingHeight = [int]$LoadingBounds.height
+      if ($LoadingWidth -ge 320 -and $LoadingHeight -ge 240 -and
+          [OmdChromeWindow]::PositionWithBounds($Handle, [int]$LoadingBounds.x, [int]$LoadingBounds.y, $LoadingWidth, $LoadingHeight)) {
+        return
+      }
+    } catch {}
+  }
   $Saved = Read-SavedWindowSize
   if ($Saved) {
     $Width = [int]$Saved.width
@@ -592,6 +618,12 @@ function Restore-WindowSizeAndCenter([long]$Handle) {
   [OmdChromeWindow]::CenterWithSize($Handle, $Width, $Height) | Out-Null
   Start-Sleep -Milliseconds 100
   [OmdChromeWindow]::CenterWithSize($Handle, $Width, $Height) | Out-Null
+}
+
+function Track-ManagedChromeWindow([long]$Handle) {
+  $ActualBrowserPid = [OmdChromeWindow]::GetProcessId($Handle)
+  if ($ActualBrowserPid -le 0) { throw '无法确定 Windows Chrome App 的真实进程' }
+  [System.IO.File]::WriteAllText([string]$Config.browserPidPath, [string]$ActualBrowserPid, [System.Text.Encoding]::ASCII)
 }
 
 function Wait-ForWindowToClose([long]$Handle) {
@@ -668,6 +700,7 @@ function Start-PwaWindow([datetime]$Deadline) {
     }
     Set-TaskbarIdentity $Handle
     Restore-WindowSizeAndCenter $Handle
+    if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) }
     if ($WindowWasGated) {
       [OmdChromeWindow]::WaitForWindowReadyToReveal($Handle, 1500) | Out-Null
       if (-not [OmdChromeWindow]::ReleaseWindowGate($Handle)) { throw '无法显示准备完成的 Windows Chrome App 窗口' }
@@ -675,6 +708,7 @@ function Start-PwaWindow([datetime]$Deadline) {
       [OmdChromeWindow]::Activate($Handle) | Out-Null
     }
     [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$Handle, [System.Text.Encoding]::ASCII)
+    Write-LauncherHandoff
     return $Handle
   } catch {
     [OmdChromeWindow]::CancelWindowGate()
@@ -692,6 +726,7 @@ function Test-HttpService {
     $ContentType = [string]$Response.Content.Headers.ContentType
     if (-not $ContentType.Contains('text/html')) { return $true }
     $Content = $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    if ($Content.Contains('id="omd-launch"')) { return $false }
     if (-not $Content.Contains('<title>DeepSeek Harness</title>')) { return $true }
     $Pattern = '(?:window\.__DSH_BOOT__|globalThis\[(?:"__DSH_BOOT__"|''__DSH_BOOT__'')\])\s*=\s*(\{.*?\})\s*</script>'
     $Match = [regex]::Match($Content, $Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
@@ -741,6 +776,41 @@ function Wait-ForLaunchSurface([datetime]$Deadline) {
   throw ("Windows 宿主机无法读取启动页 {0}" -f $Config.url)
 }
 
+function Test-PageHandoff {
+  $Response = $null
+  try {
+    $HandoffUrl = [Uri]::new([Uri]([string]$Config.url), '/__omd_handoff_ready').AbsoluteUri
+    $Response = $HttpClient.GetAsync($HandoffUrl).GetAwaiter().GetResult()
+    return $Response.IsSuccessStatusCode
+  } catch {
+    return $false
+  } finally {
+    if ($Response) { $Response.Dispose() }
+  }
+}
+
+function Wait-ForPageHandoff([datetime]$Deadline) {
+  $ReadyReadings = 0
+  while ([datetime]::UtcNow -lt $Deadline) {
+    if (Test-PageHandoff) { return }
+    if (Test-HttpService) {
+      $ReadyReadings += 1
+      if ($ReadyReadings -ge 4) { return }
+    } else {
+      $ReadyReadings = 0
+    }
+    Start-Sleep -Milliseconds 40
+  }
+  throw 'Windows Chrome App 页面未能完成 loading 交接'
+}
+
+function Write-LauncherHandoff {
+  if (-not $Config.launcherHandoffPath) { return }
+  $Directory = [System.IO.Path]::GetDirectoryName([string]$Config.launcherHandoffPath)
+  [System.IO.Directory]::CreateDirectory($Directory) | Out-Null
+  [System.IO.File]::WriteAllText([string]$Config.launcherHandoffPath, [string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()), [System.Text.Encoding]::ASCII)
+}
+
 function Wait-ForHostService([datetime]$Deadline) {
   $ConsecutiveSuccesses = 0
   while ([datetime]::UtcNow -lt $Deadline) {
@@ -756,35 +826,29 @@ function Wait-ForHostService([datetime]$Deadline) {
 }
 
 function Stop-ManagedChrome {
-  if (-not (Test-Path -LiteralPath $Config.browserPidPath -PathType Leaf)) { return }
-  try {
-    $BrowserPid = [int](Get-Content -LiteralPath $Config.browserPidPath -Raw -ErrorAction Stop).Trim()
-    & taskkill.exe /PID $BrowserPid /T 2>$null | Out-Null
-    Start-Sleep -Milliseconds 750
-    if (Get-Process -Id $BrowserPid -ErrorAction SilentlyContinue) {
-      & taskkill.exe /PID $BrowserPid /T /F 2>$null | Out-Null
-    }
-  } catch {}
-  Remove-Item -LiteralPath $Config.browserPidPath -Force -ErrorAction SilentlyContinue
-  $script:BrowserProcess = $null
-}
-
-function Test-ManagedChrome {
-  if ($script:BrowserProcess) {
+  if (Test-Path -LiteralPath $Config.browserPidPath -PathType Leaf) {
     try {
-      $script:BrowserProcess.Refresh()
-      return -not $script:BrowserProcess.HasExited
-    } catch {
-      return $false
+      $BrowserPid = [int](Get-Content -LiteralPath $Config.browserPidPath -Raw -ErrorAction Stop).Trim()
+      & taskkill.exe /PID $BrowserPid /T 2>$null | Out-Null
+      Start-Sleep -Milliseconds 750
+      if (Get-Process -Id $BrowserPid -ErrorAction SilentlyContinue) {
+        & taskkill.exe /PID $BrowserPid /T /F 2>$null | Out-Null
+      }
+    } catch {}
+  }
+  $ExpectedProfile = [string]$Config.chromeProfilePath
+  if (-not [string]::IsNullOrWhiteSpace($ExpectedProfile)) {
+    Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" -ErrorAction SilentlyContinue | Where-Object {
+      -not [string]::IsNullOrWhiteSpace([string]$_.CommandLine) -and
+      ([string]$_.CommandLine).IndexOf($ExpectedProfile, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    } | ForEach-Object {
+      $ProfilePid = [int]$_.ProcessId
+      & taskkill.exe /PID $ProfilePid /T /F 2>$null | Out-Null
     }
   }
-  if (-not (Test-Path -LiteralPath $Config.browserPidPath -PathType Leaf)) { return $false }
-  try {
-    $BrowserPid = [int](Get-Content -LiteralPath $Config.browserPidPath -Raw -ErrorAction Stop).Trim()
-    return $null -ne (Get-Process -Id $BrowserPid -ErrorAction SilentlyContinue)
-  } catch {
-    return $false
-  }
+  Remove-Item -LiteralPath $Config.browserPidPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $Config.windowHandlePath -Force -ErrorAction SilentlyContinue
+  $script:BrowserProcess = $null
 }
 
 function Start-HostChrome {
@@ -808,17 +872,16 @@ function Start-HostChrome {
 function Wait-ForDevTools([datetime]$Deadline) {
   while ([datetime]::UtcNow -lt $Deadline) {
     if ((Invoke-DevTools '/json/version').ok) { return }
-    if (-not (Test-ManagedChrome)) { throw 'Windows Chrome 在初始化期间退出' }
     Start-Sleep -Milliseconds 200
   }
-  throw 'Windows Chrome 初始化超时'
+  $LauncherDetail = if ($script:BrowserProcess -and $script:BrowserProcess.HasExited) { '；Chrome 引导进程已退出，但未发现真实浏览器 DevTools' } else { '' }
+  throw ('Windows Chrome 初始化超时' + $LauncherDetail)
 }
 
 function Wait-ForAppTarget([datetime]$Deadline) {
   while ([datetime]::UtcNow -lt $Deadline) {
     $Target = Get-AppTarget
     if ($Target) { return $Target }
-    if (-not (Test-ManagedChrome)) { throw 'Windows Chrome 在 App 窗口打开前退出' }
     Start-Sleep -Milliseconds 100
   }
   throw '无法确认 Windows Chrome App 窗口已打开'
@@ -848,20 +911,24 @@ function Run-BrowserLifecycle {
     [OmdChromeWindow]::CancelWindowGate()
     $WindowHandle = Wait-ForNewChromeWindow $WindowBaseline $WindowDeadline '无法确认 Windows Chrome App 窗口已打开'
   }
+  Track-ManagedChromeWindow $WindowHandle
   Set-TaskbarIdentity $WindowHandle
   Restore-WindowSizeAndCenter $WindowHandle
+  if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) }
   if ($WindowWasGated) {
     [OmdChromeWindow]::WaitForWindowReadyToReveal($WindowHandle, 1500) | Out-Null
     if (-not [OmdChromeWindow]::ReleaseWindowGate($WindowHandle)) { throw '无法显示准备完成的 Windows Chrome App 窗口' }
   } else {
     [OmdChromeWindow]::Activate($WindowHandle) | Out-Null
   }
+  [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$WindowHandle, [System.Text.Encoding]::ASCII)
   Invoke-DevTools ('/json/activate/' + [string]$Target.id) | Out-Null
+  Write-LauncherHandoff
   while ($true) {
     Save-WindowSize $WindowHandle
     $Snapshot = Get-TargetSnapshot
     if ($Snapshot.ok -and -not (@($Snapshot.items) | Where-Object { $_.id -eq $Target.id })) { return }
-    if (-not (Test-ManagedChrome)) { return }
+    if (-not [OmdChromeWindow]::IsAlive($WindowHandle)) { return }
     Start-Sleep -Milliseconds 100
   }
 }
@@ -891,10 +958,11 @@ try {
 } catch {
   $Message = $_.Exception.Message
   [System.IO.File]::WriteAllText([string]$Config.lastErrorPath, $Message, [System.Text.UTF8Encoding]::new($false))
-  Write-Error $Message
+  [Console]::Error.WriteLine($Message)
   $ExitCode = 1
 } finally {
   if ($Config.launchMode -eq 'installed-pwa') { Stop-PwaWindow } else { Stop-ManagedChrome }
+  if ($Config.launcherHandoffPath) { Remove-Item -LiteralPath $Config.launcherHandoffPath -Force -ErrorAction SilentlyContinue }
   $HttpClient.Dispose()
 }
 exit $ExitCode
