@@ -1,7 +1,7 @@
 import { chmod, copyFile, lstat, mkdtemp, readFile, readdir, readlink, rename, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY, MAC_ON_DEMAND_HELPER_VERSION } from "../constants.mjs";
 import { renderMacChromeShimInfo, renderMacInfoPlist, renderMacLauncher } from "../templates/macos.mjs";
@@ -14,6 +14,8 @@ import {
 import { resolveDirectPosixService, warmDirectServiceCompileCache } from "../service-command.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
 import { ensureDirectory, pathExists, removeExactTarget, writeText } from "../utils.mjs";
+
+const bundledLoadingIcon = fileURLToPath(new URL("../../assets/windows-icon-master-v2.png", import.meta.url));
 
 export async function createMacLauncher(config, chrome, runtime = {}) {
   const homeDirectory = config.homeDirectory || os.homedir();
@@ -118,7 +120,7 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
     }
     await updateInstalledChromeWebAppIcons({ homeDirectory, appId: chromeAppId, iconPath: chrome.icon });
     await ensureDirectory(stateDirectory);
-    prepareMacLoadingIcon(chrome.icon, loadingIconPath);
+    await copyFile(bundledLoadingIcon, loadingIconPath);
     await writeText(onDemandProxyPath, renderMacOnDemandProxy());
     await writeText(onDemandSourcePath, renderMacOnDemandActivatorSource());
     await writeText(
@@ -621,16 +623,6 @@ function compileMacMonitor(sourcePath, binaryPath) {
     }
   }
   return false;
-}
-
-function prepareMacLoadingIcon(sourcePath, targetPath) {
-  if (!sourcePath) throw new Error("缺少 macOS 小鲸鱼图标，无法生成启动页");
-  const result = spawnSync("/usr/bin/sips", ["-z", "256", "256", "-s", "format", "png", sourcePath, "--out", targetPath], {
-    encoding: "utf8",
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(`无法生成 macOS loading 小鲸鱼图标：${result.error?.message || result.stderr || result.stdout}`);
-  }
 }
 
 function compileMacServiceManager(sourcePath, binaryPath) {

@@ -6,8 +6,7 @@ import { spawnSync } from "node:child_process";
 import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
 import { renderMacOnDemandProxy } from "../templates/macos-on-demand.mjs";
-import { renderWindowsShortcutScript } from "../templates/windows.mjs";
-import { renderWindowsLoadingLauncherSource } from "../templates/windows-loading-launcher.mjs";
+import { renderWindowsNativeLauncherSource, renderWindowsShortcutScript } from "../templates/windows.mjs";
 import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
 import {
   parseSimpleServiceCommand,
@@ -108,7 +107,8 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     workingDirectory: config.workingDirectory,
     logPath,
     residentMonitor: false,
-    instantLoading: true,
+    instantLoading: false,
+    loadingRenderer: "chrome-html",
     usesLoadingScreen,
     restartPersistence: "shortcut-on-disk",
     replacedExisting,
@@ -143,9 +143,6 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     const loadingProxyPath = path.join(supportDirectory, "loading-proxy.mjs");
     const loadingConfigPath = path.join(supportDirectory, "loading-config.json");
     const loadingIconPath = path.join(supportDirectory, "loading-whale.png");
-    const hostLoadingIconPath = path.win32.join(hostSupportDirectory, "loading-whale.png");
-    const loadingBoundsPath = path.win32.join(hostStateDirectory, "loading-window.json");
-    const launcherHandoffPath = path.win32.join(hostStateDirectory, "launcher-handoff.ready");
     const windowHandlePath = path.win32.join(hostSupportDirectory, "app-window.txt");
     const loadingProxyService = usesLoadingScreen ? {
       executable: config.nodePath,
@@ -196,8 +193,6 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       sourceAppUserModelId: officialPwaAppUserModelId,
       taskbarIconResource: `${installedIconPath},0`,
       windowBoundsPath: path.win32.join(hostStateDirectory, "window-size.json"),
-      loadingBoundsPath,
-      launcherHandoffPath,
       windowHandlePath,
       browserPidPath: path.win32.join(hostSupportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,
@@ -242,18 +237,10 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     wslArguments.push("--exec", config.nodePath, path.join(supportDirectory, "supervisor.mjs"));
     const nativeLauncherSourceWsl = path.join(hostStagingDirectory, "launcher.cs");
     const nativeLauncherExecutableWsl = path.join(hostStagingDirectory, "launcher.exe");
-    await writeText(nativeLauncherSourceWsl, renderWindowsLoadingLauncherSource({
+    await writeText(nativeLauncherSourceWsl, renderWindowsNativeLauncherSource({
       programPath: windowsEnvironment.wsl,
       programArguments: wslArguments,
       appUserModelId,
-      loadingName: config.name,
-      loadingMessage: `${config.name} 正在启动`,
-      loadingIconPath: hostLoadingIconPath,
-      windowIconPath: installedIconPath,
-      windowBoundsPath: path.win32.join(hostStateDirectory, "window-size.json"),
-      loadingBoundsPath,
-      handoffReadyPath: launcherHandoffPath,
-      activeWindowHandlePath: windowHandlePath,
       missingTitle: "找不到 WSL",
       missingMessage: `找不到 Windows WSL 启动器：${windowsEnvironment.wsl}`,
     }));
@@ -264,7 +251,6 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     if (chrome.icon) {
       await copyFile(chrome.icon, path.join(hostStagingDirectory, "app.ico"));
     }
-    await copyFile(bundledLoadingIcon, path.join(hostStagingDirectory, "loading-whale.png"));
     interop.compileNativeLauncher({
       sourcePath: interop.toWindowsPath(nativeLauncherSourceWsl),
       outputPath: interop.toWindowsPath(nativeLauncherExecutableWsl),
@@ -345,7 +331,6 @@ export async function inspectWslRestartPersistence(config, interop = defaultInte
     path.join(supportDirectory, "supervisor.mjs"),
     path.join(hostSupportDirectoryWsl, "launcher.exe"),
     path.join(hostSupportDirectoryWsl, "launcher.cs"),
-    path.join(hostSupportDirectoryWsl, "loading-whale.png"),
     path.join(hostSupportDirectoryWsl, "browser-host.ps1"),
     path.join(hostSupportDirectoryWsl, "browser-config.json"),
     shortcutPathWsl,
@@ -474,7 +459,7 @@ $Value = @{
     }
   },
   compileNativeLauncher({ sourcePath, outputPath }) {
-    const script = `Add-Type -Path ${powershellSingleQuote(sourcePath)} -ReferencedAssemblies @('System.dll','System.Drawing.dll','System.Windows.Forms.dll') -OutputAssembly ${powershellSingleQuote(outputPath)} -OutputType WindowsApplication`;
+    const script = `Add-Type -Path ${powershellSingleQuote(sourcePath)} -OutputAssembly ${powershellSingleQuote(outputPath)} -OutputType WindowsApplication`;
     const result = runPowerShell(script);
     if (result.error || result.status !== 0) {
       throw new Error(`无法编译 Windows 原生启动器：${formatCommandError(result)}`);

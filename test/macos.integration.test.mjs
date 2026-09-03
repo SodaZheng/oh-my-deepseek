@@ -94,6 +94,10 @@ test("installs one canonical Chrome App with a zero-resident on-demand socket la
   const onDemandConfig = JSON.parse(await readFile(path.join(root, "Library", "Application Support", "Oh My DeepSeek", "apps", `${config.slug}-${config.instanceId.slice(0, 8)}`, "on-demand-config.json"), "utf8"));
   assert.match(onDemandConfig.loadingIconPath, /loading-whale\.png$/);
   assert.equal(await pathExists(onDemandConfig.loadingIconPath), true);
+  assert.deepEqual(
+    await readFile(onDemandConfig.loadingIconPath),
+    await readFile(path.resolve("assets/windows-icon-master-v2.png")),
+  );
   for (const executable of [result.onDemandLauncherPath, path.join(result.serviceBundlePath, "Contents", "MacOS", "service-manager")]) {
     const buildVersion = spawnSync("/usr/bin/vtool", ["-show-build", executable], { encoding: "utf8" });
     assert.equal(buildVersion.status, 0, buildVersion.stderr || buildVersion.stdout);

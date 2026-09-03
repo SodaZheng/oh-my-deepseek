@@ -426,11 +426,6 @@ public static class OmdChromeWindow {
     var y = info.work.top + (workHeight - height) / 2;
     return SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, 0x0004 | 0x0010);
   }
-  public static bool PositionWithBounds(long handle, int x, int y, int requestedWidth, int requestedHeight) {
-    var hwnd = new IntPtr(handle);
-    if (!IsWindow(hwnd) || requestedWidth < 320 || requestedHeight < 240) return false;
-    return SetWindowPos(hwnd, IntPtr.Zero, x, y, requestedWidth, requestedHeight, 0x0004 | 0x0010);
-  }
   public static bool Close(long handle) {
     var hwnd = new IntPtr(handle);
     return IsWindow(hwnd) && PostMessage(hwnd, 0x0010, IntPtr.Zero, IntPtr.Zero);
@@ -594,17 +589,6 @@ function Save-WindowSize([long]$Handle) {
 }
 
 function Restore-WindowSizeAndCenter([long]$Handle) {
-  if ($Config.loadingBoundsPath -and (Test-Path -LiteralPath $Config.loadingBoundsPath -PathType Leaf)) {
-    try {
-      $LoadingBounds = Get-Content -LiteralPath $Config.loadingBoundsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-      $LoadingWidth = [int]$LoadingBounds.width
-      $LoadingHeight = [int]$LoadingBounds.height
-      if ($LoadingWidth -ge 320 -and $LoadingHeight -ge 240 -and
-          [OmdChromeWindow]::PositionWithBounds($Handle, [int]$LoadingBounds.x, [int]$LoadingBounds.y, $LoadingWidth, $LoadingHeight)) {
-        return
-      }
-    } catch {}
-  }
   $Saved = Read-SavedWindowSize
   if ($Saved) {
     $Width = [int]$Saved.width
@@ -700,7 +684,6 @@ function Start-PwaWindow([datetime]$Deadline) {
     }
     Set-TaskbarIdentity $Handle
     Restore-WindowSizeAndCenter $Handle
-    if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) }
     if ($WindowWasGated) {
       [OmdChromeWindow]::WaitForWindowReadyToReveal($Handle, 1500) | Out-Null
       if (-not [OmdChromeWindow]::ReleaseWindowGate($Handle)) { throw '无法显示准备完成的 Windows Chrome App 窗口' }
@@ -708,7 +691,7 @@ function Start-PwaWindow([datetime]$Deadline) {
       [OmdChromeWindow]::Activate($Handle) | Out-Null
     }
     [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$Handle, [System.Text.Encoding]::ASCII)
-    Write-LauncherHandoff
+    if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) $Handle }
     return $Handle
   } catch {
     [OmdChromeWindow]::CancelWindowGate()
@@ -789,9 +772,10 @@ function Test-PageHandoff {
   }
 }
 
-function Wait-ForPageHandoff([datetime]$Deadline) {
+function Wait-ForPageHandoff([datetime]$Deadline, [long]$Handle) {
   $ReadyReadings = 0
   while ([datetime]::UtcNow -lt $Deadline) {
+    if (-not [OmdChromeWindow]::IsAlive($Handle)) { throw 'Windows Chrome App 在 loading 期间已关闭' }
     if (Test-PageHandoff) { return }
     if (Test-HttpService) {
       $ReadyReadings += 1
@@ -802,13 +786,6 @@ function Wait-ForPageHandoff([datetime]$Deadline) {
     Start-Sleep -Milliseconds 40
   }
   throw 'Windows Chrome App 页面未能完成 loading 交接'
-}
-
-function Write-LauncherHandoff {
-  if (-not $Config.launcherHandoffPath) { return }
-  $Directory = [System.IO.Path]::GetDirectoryName([string]$Config.launcherHandoffPath)
-  [System.IO.Directory]::CreateDirectory($Directory) | Out-Null
-  [System.IO.File]::WriteAllText([string]$Config.launcherHandoffPath, [string]([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()), [System.Text.Encoding]::ASCII)
 }
 
 function Wait-ForHostService([datetime]$Deadline) {
@@ -914,7 +891,6 @@ function Run-BrowserLifecycle {
   Track-ManagedChromeWindow $WindowHandle
   Set-TaskbarIdentity $WindowHandle
   Restore-WindowSizeAndCenter $WindowHandle
-  if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) }
   if ($WindowWasGated) {
     [OmdChromeWindow]::WaitForWindowReadyToReveal($WindowHandle, 1500) | Out-Null
     if (-not [OmdChromeWindow]::ReleaseWindowGate($WindowHandle)) { throw '无法显示准备完成的 Windows Chrome App 窗口' }
@@ -923,7 +899,7 @@ function Run-BrowserLifecycle {
   }
   [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$WindowHandle, [System.Text.Encoding]::ASCII)
   Invoke-DevTools ('/json/activate/' + [string]$Target.id) | Out-Null
-  Write-LauncherHandoff
+  if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) $WindowHandle }
   while ($true) {
     Save-WindowSize $WindowHandle
     $Snapshot = Get-TargetSnapshot
@@ -962,7 +938,6 @@ try {
   $ExitCode = 1
 } finally {
   if ($Config.launchMode -eq 'installed-pwa') { Stop-PwaWindow } else { Stop-ManagedChrome }
-  if ($Config.launcherHandoffPath) { Remove-Item -LiteralPath $Config.launcherHandoffPath -Force -ErrorAction SilentlyContinue }
   $HttpClient.Dispose()
 }
 exit $ExitCode

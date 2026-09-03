@@ -131,11 +131,15 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(await pathExists(path.join(result.supportDirectory, "loading-proxy.mjs")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "loading-config.json")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "loading-whale.png")), true);
+  assert.deepEqual(
+    await readFile(path.join(result.supportDirectory, "loading-whale.png")),
+    await readFile(path.resolve("assets/windows-icon-master-v2.png")),
+  );
   assert.equal(await pathExists(path.join(hostSupport, "browser-host.ps1")), true);
   assert.equal(await pathExists(path.join(hostSupport, "launcher.ps1")), false);
   assert.equal(await pathExists(path.join(hostSupport, "launcher.js")), false);
   assert.equal(await pathExists(path.join(hostSupport, "launcher.exe")), true);
-  assert.equal(await pathExists(path.join(hostSupport, "loading-whale.png")), true);
+  assert.equal(await pathExists(path.join(hostSupport, "loading-whale.png")), false);
   assert.equal(await pathExists(path.join(hostSupport, "pwa-monitor.exe")), false);
   const nativeLauncherSource = await readFile(path.join(hostSupport, "launcher.cs"), "utf8");
   assert.match(nativeLauncherSource, /SetCurrentProcessExplicitAppUserModelID/);
@@ -143,11 +147,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.match(nativeLauncherSource, /CreateNoWindow = true/);
   assert.match(nativeLauncherSource, /Process\.Start/);
   assert.match(nativeLauncherSource, /process\.WaitForExit\(\)/);
-  assert.match(nativeLauncherSource, /Application\.Run\(form\)/);
-  assert.match(nativeLauncherSource, /HandoffReadyPath/);
-  assert.match(nativeLauncherSource, /TopMost = true/);
-  assert.match(nativeLauncherSource, /System\.Threading\.Timer/);
-  assert.match(nativeLauncherSource, /Color\.FromArgb\(21, 21, 23\)/);
+  assert.doesNotMatch(nativeLauncherSource, /Application\.Run|HandoffReadyPath|DwmFlush|CreateTransparentWhale/);
   const browserHostSource = await readFile(path.join(hostSupport, "browser-host.ps1"), "utf8");
   assert.match(browserHostSource, /BeginWindowGate/);
   assert.match(browserHostSource, /DwmSetWindowAttribute/);
@@ -188,8 +188,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   const browserConfig = JSON.parse(await readFile(path.join(hostSupport, "browser-config.json"), "utf8"));
   assert.equal(browserConfig.launchMode, "installed-pwa");
   assert.equal(browserConfig.loadingMode, true);
-  assert.match(browserConfig.loadingBoundsPath, /loading-window\.json$/);
-  assert.match(browserConfig.launcherHandoffPath, /launcher-handoff\.ready$/);
+  assert.equal(browserConfig.loadingBoundsPath, undefined);
+  assert.equal(browserConfig.launcherHandoffPath, undefined);
   assert.equal(browserConfig.appUserModelId, appUserModelId);
   assert.equal(browserConfig.sourceAppUserModelId, officialPwaAppUserModelId);
   assert.equal(browserConfig.taskbarIconResource, `${path.win32.join(result.hostSupportDirectory, "app.ico")},0`);
@@ -198,7 +198,8 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
     path.win32.join(String.raw`C:\Users\tester\AppData\Local`, "Oh My DeepSeek", "state", `${config.slug}-${config.instanceId.slice(0, 8)}`, "window-size.json"),
   );
   assert.equal(result.serviceLaunchMode, "direct");
-  assert.equal(result.instantLoading, true);
+  assert.equal(result.instantLoading, false);
+  assert.equal(result.loadingRenderer, "chrome-html");
   assert.equal(result.usesLoadingScreen, true);
   assert.equal(result.taskbarIdentityMatched, true);
   assert.equal(result.usesOfficialPwaEntry, true);

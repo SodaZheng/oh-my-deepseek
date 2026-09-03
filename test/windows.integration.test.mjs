@@ -47,14 +47,15 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(await pathExists(path.join(result.supportDirectory, "loading-proxy.mjs")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "loading-config.json")), true);
   assert.equal(await pathExists(path.join(result.supportDirectory, "loading-whale.png")), true);
+  assert.deepEqual(
+    await readFile(path.join(result.supportDirectory, "loading-whale.png")),
+    await readFile(path.resolve("assets/windows-icon-master-v2.png")),
+  );
   assert.equal(result.restartPersistence, "shortcut-on-disk");
-  const loadingLauncher = await readFile(path.join(result.supportDirectory, "launcher.cs"), "utf8");
-  assert.match(loadingLauncher, /OhMyDeepSeekLoadingLauncher/);
-  assert.match(loadingLauncher, /Application\.Run\(form\)/);
-  assert.match(loadingLauncher, /HandoffReadyPath/);
-  assert.match(loadingLauncher, /TopMost = true/);
-  assert.match(loadingLauncher, /System\.Threading\.Timer/);
-  assert.match(loadingLauncher, /Color\.FromArgb\(21, 21, 23\)/);
+  const nativeLauncher = await readFile(path.join(result.supportDirectory, "launcher.cs"), "utf8");
+  assert.match(nativeLauncher, /OhMyDeepSeekLauncher/);
+  assert.match(nativeLauncher, /CreateNoWindow = true/);
+  assert.doesNotMatch(nativeLauncher, /Application\.Run|DwmFlush|CreateTransparentWhale/);
   const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
   assert.equal(storedConfig.generatedBy, "oh-my-deepseek");
   assert.equal(storedConfig.launchMode, "windows-host-browser");
@@ -62,12 +63,13 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(storedConfig.directService.serviceKind, "loading-proxy");
   assert.equal(result.residentMonitor, false);
   assert.equal(result.windowGate, true);
-  assert.equal(result.instantLoading, true);
+  assert.equal(result.instantLoading, false);
+  assert.equal(result.loadingRenderer, "chrome-html");
   assert.equal(result.usesLoadingScreen, true);
   const generatedBrowserConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "browser-config.json"), "utf8"));
   assert.equal(generatedBrowserConfig.loadingMode, true);
-  assert.match(generatedBrowserConfig.loadingBoundsPath, /loading-window\.json$/);
-  assert.match(generatedBrowserConfig.launcherHandoffPath, /launcher-handoff\.ready$/);
+  assert.equal(generatedBrowserConfig.loadingBoundsPath, undefined);
+  assert.equal(generatedBrowserConfig.launcherHandoffPath, undefined);
   const generatedLoadingConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "loading-config.json"), "utf8"));
   assert.equal(generatedLoadingConfig.platform, "win32");
   assert.equal(generatedLoadingConfig.directService.serviceKind, "dsh-web");

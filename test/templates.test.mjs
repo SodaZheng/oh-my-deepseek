@@ -8,7 +8,6 @@ import { renderMacOnDemandActivatorSource, renderMacOnDemandProxy } from "../src
 import { renderMacManagedLaunchAgent, renderMacOnDemandLaunchAgent, renderMacServiceManagerInfo, renderMacServiceManagerSource } from "../src/templates/macos-service-manager.mjs";
 import { renderSupervisor } from "../src/templates/supervisor.mjs";
 import { renderWindowsHiddenLauncher, renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource, renderWindowsShortcutScript } from "../src/templates/windows.mjs";
-import { renderWindowsLoadingLauncherSource } from "../src/templates/windows-loading-launcher.mjs";
 import { renderWindowsWindowState } from "../src/templates/windows-window-state.mjs";
 import { renderWindowsHostBrowser } from "../src/templates/wsl.mjs";
 
@@ -108,7 +107,12 @@ test("macOS on-demand templates use socket activation without an idle process", 
   assert.match(proxy, /__omd_handoff_ready/);
   assert.match(proxy, /browserLoadingServed/);
   assert.match(proxy, /injectLoadingOverlay/);
-  assert.match(loadingDocument, /omd-whale-float/);
+  assert.match(loadingDocument, /omd-whale-breathe/);
+  assert.match(loadingDocument, /omd-whale-pearl/);
+  assert.match(loadingDocument, /feColorMatrix/);
+  assert.match(loadingDocument, /0\.770[\s\S]*amplitude="0\.62"/);
+  assert.match(loadingDocument, /clip-path: inset\(19% 10% 18% 14%\)/);
+  assert.doesNotMatch(loadingDocument, /omd-depth-breathe|omd-surface-light/);
   assert.match(loadingDocument, /#151517/);
   assert.match(loadingDocument, /__OMD_APP_NAME__ 正在启动/);
   assert.match(loadingOverlay, /omd-launch--leaving/);
@@ -172,21 +176,6 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
     missingMessage: "WSL moved",
   });
   const shortcut = renderWindowsShortcutScript({ nativeLauncher: true });
-  const loadingLauncher = renderWindowsLoadingLauncherSource({
-    programPath: "C:\\Windows\\System32\\wsl.exe",
-    programArguments: ["--distribution", "Ubuntu", "--exec", "/usr/bin/node", "/app/supervisor.mjs"],
-    appUserModelId: "OpenAI.OhMyDeepSeek.test",
-    loadingName: "DeepSeek Harness",
-    loadingMessage: "DeepSeek Harness 正在启动",
-    loadingIconPath: "C:\\App\\loading-whale.png",
-    windowIconPath: "C:\\App\\app.ico",
-    windowBoundsPath: "C:\\State\\window-size.json",
-    loadingBoundsPath: "C:\\State\\loading-window.json",
-    handoffReadyPath: "C:\\State\\launcher-handoff.ready",
-    activeWindowHandlePath: "C:\\App\\app-window.txt",
-    missingTitle: "Missing WSL",
-    missingMessage: "WSL moved",
-  });
   const pwaMonitor = renderWindowsPwaMonitorSource({
     appUserModelId: "Chrome._crx_test",
     launcherPath: "C:\\App\\launcher.exe",
@@ -199,15 +188,6 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(launcher, /CreateNoWindow = true/);
   assert.match(launcher, /Process\.Start/);
   assert.match(launcher, /process\.WaitForExit\(\)/);
-  assert.match(loadingLauncher, /OhMyDeepSeekLoadingLauncher/);
-  assert.match(loadingLauncher, /Application\.Run\(form\)/);
-  assert.match(loadingLauncher, /SystemParametersInfo\(0x1042/);
-  assert.match(loadingLauncher, /System\.Threading\.Timer/);
-  assert.match(loadingLauncher, /timeBeginPeriod\(1\)/);
-  assert.match(loadingLauncher, /Color\.FromArgb\(21, 21, 23\)/);
-  assert.match(loadingLauncher, /Screen\.PrimaryScreen\.WorkingArea/);
-  assert.match(loadingLauncher, /TopMost = true/);
-  assert.match(loadingLauncher, /HandoffReadyPath/);
   assert.match(shortcut, /\$Shortcut\.TargetPath = \$LauncherPath/);
   assert.doesNotMatch(shortcut, /Get-Command wscript\.exe/);
   assert.match(pwaMonitor, /SetWinEventHook/);
@@ -231,8 +211,7 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /function Test-HttpService/);
   assert.match(browserHost, /function Test-LaunchSurface/);
   assert.match(browserHost, /function Wait-ForPageHandoff/);
-  assert.match(browserHost, /function Write-LauncherHandoff/);
-  assert.match(browserHost, /PositionWithBounds/);
+  assert.doesNotMatch(browserHost, /function Write-LauncherHandoff|PositionWithBounds/);
   assert.match(browserHost, /Track-ManagedChromeWindow/);
   assert.match(browserHost, /Get-CimInstance Win32_Process/);
   assert.doesNotMatch(browserHost, /Windows Chrome 在初始化期间退出/);
@@ -252,8 +231,7 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
     browserHost.indexOf("function Start-PwaWindow"),
     browserHost.indexOf("function Test-HttpService"),
   );
-  assert.ok(pwaLaunch.indexOf("Wait-ForPageHandoff") < pwaLaunch.indexOf("ReleaseWindowGate"));
-  assert.ok(pwaLaunch.indexOf("ReleaseWindowGate") < pwaLaunch.indexOf("Write-LauncherHandoff"));
+  assert.ok(pwaLaunch.indexOf("ReleaseWindowGate") < pwaLaunch.indexOf("Wait-ForPageHandoff"));
   assert.match(browserHost, /EventObjectCreate/);
   assert.match(browserHost, /DwmSetWindowAttribute/);
   assert.match(browserHost, /SetWindowCloaked\(hwnd, false\)/);
@@ -311,6 +289,7 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.ok(browserLifecycle.lastIndexOf("Set-TaskbarIdentity") < browserLifecycle.lastIndexOf("ReleaseWindowGate"));
   assert.ok(browserLifecycle.lastIndexOf("Restore-WindowSizeAndCenter") < browserLifecycle.lastIndexOf("ReleaseWindowGate"));
   assert.ok(browserLifecycle.lastIndexOf("WaitForWindowReadyToReveal") < browserLifecycle.lastIndexOf("ReleaseWindowGate"));
+  assert.ok(browserLifecycle.lastIndexOf("ReleaseWindowGate") < browserLifecycle.lastIndexOf("Wait-ForPageHandoff"));
   assert.match(browserHost, /Size = 24/);
   assert.doesNotMatch(browserHost, /Size = 16/);
   assert.match(browserHost, /PostMessage\(hwnd, 0x0010/);
