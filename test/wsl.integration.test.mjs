@@ -146,7 +146,9 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.match(nativeLauncherSource, /Application\.Run\(form\)/);
   assert.match(nativeLauncherSource, /HandoffReadyPath/);
   assert.match(nativeLauncherSource, /TopMost = true/);
-  assert.match(nativeLauncherSource, /System\.Threading\.Timer/);
+  assert.match(nativeLauncherSource, /DwmFlush\(\)/);
+  assert.match(nativeLauncherSource, /CreateTransparentWhale/);
+  assert.doesNotMatch(nativeLauncherSource, /DrawDepthGlow|DrawSpecular/);
   assert.match(nativeLauncherSource, /Color\.FromArgb\(21, 21, 23\)/);
   const browserHostSource = await readFile(path.join(hostSupport, "browser-host.ps1"), "utf8");
   assert.match(browserHostSource, /BeginWindowGate/);

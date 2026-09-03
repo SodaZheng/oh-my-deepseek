@@ -45,7 +45,7 @@ macOS 会把官方 Chrome App Shim 安装到 `~/Applications/DeepSeek Harness.ap
 
 macOS 会继续使用 Chrome 官方 `app_mode_loader` 和唯一的可见 App。`SMAppService` 只向 launchd 注册一个按需 socket：空闲时由系统持有端口，没有 OMD、Node 或 DSH 用户进程。点击官方 App 后，第一次 HTTP 连接才拉起原生按需启动器；它不再 hide/unhide 整个 App，而是缓冲第一次页面请求，在内部随机端口启动 DSH，并通过本机 TCP 代理保留原 URL。完整页面与插件清单连续稳定后，同一个请求在同一个窗口中继续完成，不关闭、不重开、不切换 Dock 身份。关闭 App 后代理、DSH 和启动器全部退出。
 
-macOS、Windows 和 WSL 都使用同一套 Harness 暗色小鲸鱼 loading。背景使用 DSH 暗色启动页的 `#151517`。Windows/WSL 的第一帧来自已编译的本机窗口，所以不依赖 WSL、Node 或本地端口，点击后即可出现；它读取上次真实 DSH 窗口的外层尺寸并在主屏工作区居中。原生动效使用高精度、时间驱动的 60fps 重绘，文字和省略点保留固定宽度，避免 WinForms 普通定时器造成的跳帧和横向抖动。真实 Chrome/PWA 在背后等待 `#root` 稳定，再接过同一位置、尺寸和任务栏身份。页面遮罩用 240ms 淡出；系统启用“减少动态效果”时，网页和 Windows 原生 loading 都会自动停用动画。
+macOS、Windows 和 WSL 都使用同一套「深海呼吸 · 珍珠雾印」小鲸鱼 loading。背景使用 DSH 暗色启动页的 `#151517`；原 icon 会被实时提取为透明底、低透明度的暖珍珠灰鲸鱼，并按鲸鱼主体范围裁掉圆角方底外围的暗色投影残影，只保留椭圆涟漪与从喷水孔上浮的气泡。状态文字与最大涟漪范围保持独立间距。Windows/WSL 的第一帧来自已编译的本机窗口，所以不依赖 WSL、Node 或本地端口，点击后即可出现；它读取上次真实 DSH 窗口的外层尺寸并在主屏工作区居中。原生动效通过 `DwmFlush` 跟随显示器合成节奏，在 60Hz、120Hz、144Hz 屏幕上自适应刷新；所有位移按实际时间插值，不使用固定帧步长。真实 Chrome/PWA 在背后等待 `#root` 稳定，再接过同一位置、尺寸和任务栏身份。页面遮罩用 420ms 淡出；系统启用“减少动态效果”时，网页和 Windows 原生 loading 都会自动停用动画。
 
 该模式会由 launchd 保留配置 URL 的端口（默认 `127.0.0.1:3080`），但不会为此保留用户进程或占用 CPU/内存。若要在终端另开一个 DSH，请显式使用其他端口，例如 `dsh web --port 3081`。
 

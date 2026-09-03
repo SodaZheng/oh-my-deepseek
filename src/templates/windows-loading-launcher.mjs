@@ -19,6 +19,7 @@ export function renderWindowsLoadingLauncherSource({
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -346,33 +347,31 @@ internal sealed class LoadingForm : Form {
 internal sealed class WhaleCanvas : Control {
   private readonly Bitmap whale;
   private readonly Font labelFont;
-  private System.Threading.Timer animationTimer;
+  private Thread animationThread;
   private readonly Stopwatch elapsed = Stopwatch.StartNew();
   private readonly string message;
   private readonly bool animationsEnabled;
   private int frameQueued;
-  private bool timerResolutionRaised;
+  private volatile bool animationRunning;
 
   [DllImport("user32.dll")]
   private static extern bool SystemParametersInfo(uint action, uint parameter, out bool value, uint flags);
 
-  [DllImport("winmm.dll")]
-  private static extern uint timeBeginPeriod(uint period);
-
-  [DllImport("winmm.dll")]
-  private static extern uint timeEndPeriod(uint period);
+  [DllImport("dwmapi.dll")]
+  private static extern int DwmFlush();
 
   internal WhaleCanvas(string messageValue, string imagePath) {
     message = messageValue;
-    using (var source = Image.FromFile(imagePath)) whale = new Bitmap(source);
+    using (var source = Image.FromFile(imagePath)) whale = CreateTransparentWhale(source);
     labelFont = new Font("Segoe UI", 10.0f, FontStyle.Regular, GraphicsUnit.Point);
     SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
     BackColor = Color.FromArgb(21, 21, 23);
     bool enabled;
     animationsEnabled = !SystemParametersInfo(0x1042, 0, out enabled, 0) || enabled;
     if (animationsEnabled) {
-      timerResolutionRaised = timeBeginPeriod(1) == 0;
-      animationTimer = new System.Threading.Timer(QueueFrame, null, 0, 16);
+      animationRunning = true;
+      animationThread = new Thread(RenderLoop) { IsBackground = true, Name = "OMD DWM animation" };
+      animationThread.Start();
     }
   }
 
@@ -380,15 +379,19 @@ internal sealed class WhaleCanvas : Control {
     base.OnPaint(eventArguments);
     var graphics = eventArguments.Graphics;
     graphics.SmoothingMode = SmoothingMode.AntiAlias;
+    graphics.CompositingQuality = CompositingQuality.HighQuality;
     graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
     graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
     var scale = Math.Max(1.0f, graphics.DpiX / 96.0f);
-    var iconSize = 76.0f * scale;
     var seconds = elapsed.Elapsed.TotalSeconds;
-    var floatOffset = animationsEnabled ? (float)(-3.0 + Math.Sin(seconds * Math.PI * 1.1) * 3.0) * scale : 0.0f;
+    var breath = animationsEnabled ? (1.0 - Math.Cos((seconds % 4.8) / 4.8 * Math.PI * 2.0)) / 2.0 : 0.5;
+    var iconScale = 0.985 + breath * 0.03;
+    var iconSize = (float)(118.0 * iconScale * scale);
+    var floatOffset = animationsEnabled ? (float)(-3.0 * breath * scale) : -1.5f * scale;
     var centerX = ClientSize.Width / 2.0f;
     var centerY = ClientSize.Height * 0.43f;
     var iconRect = new RectangleF(centerX - iconSize / 2.0f, centerY - iconSize / 2.0f + floatOffset, iconSize, iconSize);
+    DrawWaterline(graphics, centerX, centerY + 49.0f * scale, seconds, breath, scale);
     graphics.DrawImage(whale, iconRect);
     DrawBubbles(graphics, iconRect, seconds, scale);
 
@@ -396,26 +399,30 @@ internal sealed class WhaleCanvas : Control {
     var labelSize = TextRenderer.MeasureText(label, labelFont);
     var dotsWidth = (int)(18.0f * scale);
     var labelX = (ClientSize.Width - labelSize.Width - dotsWidth) / 2;
-    var labelY = (int)(iconRect.Bottom + 20.0f * scale);
+    var labelY = (int)(centerY + 96.0f * scale);
     TextRenderer.DrawText(graphics, label, labelFont, new Point(labelX, labelY), Color.FromArgb(207, 211, 214), Color.Transparent);
     DrawDots(graphics, labelX + labelSize.Width + 3.0f * scale, labelY + labelSize.Height / 2.0f, seconds, scale);
   }
 
   protected override void Dispose(bool disposing) {
     if (disposing) {
-      if (animationTimer != null) {
-        animationTimer.Change(Timeout.Infinite, Timeout.Infinite);
-        animationTimer.Dispose();
-        animationTimer = null;
-      }
-      if (timerResolutionRaised) timeEndPeriod(1);
+      animationRunning = false;
+      if (animationThread != null && Thread.CurrentThread != animationThread) animationThread.Join(250);
+      animationThread = null;
       labelFont.Dispose();
       whale.Dispose();
     }
     base.Dispose(disposing);
   }
 
-  private void QueueFrame(object state) {
+  private void RenderLoop() {
+    while (animationRunning) {
+      QueueFrame();
+      if (DwmFlush() < 0) Thread.Sleep(8);
+    }
+  }
+
+  private void QueueFrame() {
     if (IsDisposed || !IsHandleCreated || Interlocked.Exchange(ref frameQueued, 1) != 0) return;
     try {
       BeginInvoke((MethodInvoker)delegate {
@@ -424,6 +431,69 @@ internal sealed class WhaleCanvas : Control {
       });
     } catch {
       Interlocked.Exchange(ref frameQueued, 0);
+    }
+  }
+
+  private static Bitmap CreateTransparentWhale(Image source) {
+    const int size = 256;
+    var result = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+    using (var graphics = Graphics.FromImage(result)) {
+      graphics.Clear(Color.Transparent);
+      graphics.CompositingMode = CompositingMode.SourceCopy;
+      graphics.CompositingQuality = CompositingQuality.HighQuality;
+      graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+      graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+      graphics.DrawImage(source, new Rectangle(0, 0, size, size));
+    }
+    var rectangle = new Rectangle(0, 0, size, size);
+    var data = result.LockBits(rectangle, ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+    try {
+      var stride = data.Stride;
+      var bytes = new byte[Math.Abs(stride) * size];
+      Marshal.Copy(data.Scan0, bytes, 0, bytes.Length);
+      for (var y = 0; y < size; y += 1) {
+        var row = stride >= 0 ? y * stride : (size - 1 - y) * -stride;
+        for (var x = 0; x < size; x += 1) {
+          var offset = row + x * 4;
+          if (x < 38 || x > 230 || y < 50 || y > 210) {
+            bytes[offset + 3] = 0;
+            continue;
+          }
+          var sourceAlpha = bytes[offset + 3];
+          var luminance = (bytes[offset + 2] * 54 + bytes[offset + 1] * 183 + bytes[offset] * 19) >> 8;
+          var darkness = 255 - luminance;
+          if (sourceAlpha < 180 || darkness < 36) {
+            bytes[offset + 3] = 0;
+            continue;
+          }
+          var coverage = Math.Min(1.0, (darkness - 36) / 219.0);
+          bytes[offset] = 186;
+          bytes[offset + 1] = 194;
+          bytes[offset + 2] = 196;
+          bytes[offset + 3] = (byte)(coverage * 158.0);
+        }
+      }
+      Marshal.Copy(bytes, 0, data.Scan0, bytes.Length);
+    } finally {
+      result.UnlockBits(data);
+    }
+    return result;
+  }
+
+  private void DrawWaterline(Graphics graphics, float centerX, float centerY, double seconds, double breath, float scale) {
+    var baseWidth = (float)(118.0 * (0.92 + breath * 0.13) * scale);
+    var baseHeight = 34.0f * scale;
+    using (var pen = new Pen(Color.FromArgb((int)(18.0 + breath * 22.0), 199, 229, 247), Math.Max(1.0f, scale))) {
+      graphics.DrawEllipse(pen, centerX - baseWidth / 2.0f, centerY - baseHeight / 2.0f, baseWidth, baseHeight);
+    }
+    for (var index = 0; index < 2; index += 1) {
+      var phase = (seconds / 3.6 + index / 3.0) % 1.0;
+      var opacity = Math.Sin(phase * Math.PI) * (1.0 - phase) * 44.0;
+      var rippleWidth = (float)(118.0 * (0.70 + phase * 1.02) * scale);
+      var rippleHeight = (float)(34.0 * (0.70 + phase * 0.88) * scale);
+      using (var ripplePen = new Pen(Color.FromArgb(Math.Max(0, (int)opacity), 199, 229, 247), Math.Max(1.0f, scale))) {
+        graphics.DrawEllipse(ripplePen, centerX - rippleWidth / 2.0f, centerY - rippleHeight / 2.0f, rippleWidth, rippleHeight);
+      }
     }
   }
 
@@ -442,13 +512,17 @@ internal sealed class WhaleCanvas : Control {
 
   private void DrawBubbles(Graphics graphics, RectangleF iconRect, double seconds, float scale) {
     if (!animationsEnabled) return;
+    var sizes = new float[] { 5.0f, 8.0f, 4.0f };
+    var delays = new double[] { 0.25, 1.20, 2.10 };
     for (var index = 0; index < 3; index += 1) {
-      var phase = (seconds / 1.8 + index * 0.34) % 1.0;
-      var alpha = (int)(Math.Sin(phase * Math.PI) * 105.0);
-      var size = (float)((4.0 + index * 1.8) * scale);
-      var x = iconRect.Right + (float)(phase * 8.0 * scale) + index * 3.0f * scale;
-      var y = iconRect.Top + 20.0f * scale - (float)(phase * 28.0 * scale) - index * 5.0f * scale;
-      using (var pen = new Pen(Color.FromArgb(Math.Max(0, alpha), 255, 255, 255), Math.Max(1.0f, scale))) {
+      var phase = (((seconds - delays[index]) % 3.3) + 3.3) % 3.3 / 3.3;
+      if (phase < 0.12) continue;
+      var progress = (phase - 0.12) / 0.88;
+      var alpha = (int)(Math.Sin(progress * Math.PI) * 108.0);
+      var size = sizes[index] * scale;
+      var x = iconRect.Right - 22.0f * scale + (float)(progress * 18.0 * scale + Math.Sin(progress * Math.PI) * 3.0 * scale);
+      var y = iconRect.Top + 25.0f * scale - (float)(progress * 34.0 * scale);
+      using (var pen = new Pen(Color.FromArgb(Math.Max(0, alpha), 199, 229, 247), Math.Max(1.0f, scale))) {
         graphics.DrawEllipse(pen, x, y, size, size);
       }
     }

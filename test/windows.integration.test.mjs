@@ -53,7 +53,9 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.match(loadingLauncher, /Application\.Run\(form\)/);
   assert.match(loadingLauncher, /HandoffReadyPath/);
   assert.match(loadingLauncher, /TopMost = true/);
-  assert.match(loadingLauncher, /System\.Threading\.Timer/);
+  assert.match(loadingLauncher, /DwmFlush\(\)/);
+  assert.match(loadingLauncher, /CreateTransparentWhale/);
+  assert.doesNotMatch(loadingLauncher, /DrawDepthGlow|DrawSpecular/);
   assert.match(loadingLauncher, /Color\.FromArgb\(21, 21, 23\)/);
   const storedConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "config.json"), "utf8"));
   assert.equal(storedConfig.generatedBy, "oh-my-deepseek");
