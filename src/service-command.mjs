@@ -1,4 +1,5 @@
 import { open, realpath } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { isExecutable, powershellSingleQuote, shellQuote } from "./utils.mjs";
@@ -77,6 +78,17 @@ export function resolveDirectWindowsService(config, env = process.env) {
 
   const isDshWeb = path.win32.basename(command).toLowerCase() === "dsh" && arguments_[0] === "web";
   const extension = path.win32.extname(discovered.servicePath).toLowerCase();
+  const nodeScript = isDshWeb ? resolveNpmDshPowerShellShim(discovered.servicePath) : null;
+  if (nodeScript) {
+    return {
+      executable: config.nodePath,
+      arguments: [nodeScript, ...arguments_],
+      path: config.servicePath,
+      serviceKind: "dsh-web",
+      dshWebLaunch: { kind: "argv", prefixArguments: [nodeScript], arguments: arguments_ },
+      warmupArguments: [nodeScript, "web", "--help"],
+    };
+  }
   if (extension === ".exe" || extension === ".com") {
     return {
       executable: discovered.servicePath,
@@ -126,6 +138,25 @@ export function resolveDirectWindowsService(config, env = process.env) {
       : null,
     warmupArguments: isDshWeb ? renderInvocation(["web", "--help"]) : null,
   };
+}
+
+function resolveNpmDshPowerShellShim(shimPath) {
+  if (path.win32.extname(shimPath).toLowerCase() !== ".ps1") return null;
+  try {
+    const shim = readFileSync(shimPath, "utf8").replaceAll("\r\n", "\n");
+    if (!shim.startsWith("#!/usr/bin/env pwsh\n") || !shim.includes("$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent")) return null;
+    const match = shim.match(/"\$basedir\/(node_modules\/@deepseek-ai\/dsh\/[^"\r\n]+\.(?:mjs|cjs|js))" \$args/);
+    if (!match) return null;
+    const npmRoot = path.win32.dirname(shimPath);
+    const scriptPath = path.win32.resolve(npmRoot, match[1]);
+    const packageRoot = path.win32.join(npmRoot, "node_modules", "@deepseek-ai", "dsh");
+    const manifest = JSON.parse(readFileSync(path.win32.join(packageRoot, "package.json"), "utf8"));
+    const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.dsh;
+    if (manifest.name !== "@deepseek-ai/dsh" || !bin || path.win32.resolve(packageRoot, bin) !== scriptPath || !existsSync(scriptPath)) return null;
+    return scriptPath;
+  } catch {
+    return null;
+  }
 }
 
 export function warmDirectServiceCompileCache(directService, config) {

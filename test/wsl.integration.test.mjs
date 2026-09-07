@@ -149,10 +149,15 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.match(nativeLauncherSource, /process\.WaitForExit\(\)/);
   assert.doesNotMatch(nativeLauncherSource, /Application\.Run|HandoffReadyPath|DwmFlush|CreateTransparentWhale/);
   const browserHostSource = await readFile(path.join(hostSupport, "browser-host.ps1"), "utf8");
+  const windowInteropSource = await readFile(path.join(hostSupport, "window-interop.cs"), "utf8");
+  assert.equal(await pathExists(path.join(hostSupport, "window-interop.dll")), true);
+  assert.equal(await pathExists(path.join(hostSupport, "browser-host.exe")), true);
+  assert.match(browserHostSource, /Add-Type -Path/);
+  assert.doesNotMatch(browserHostSource, /Add-Type -TypeDefinition/);
   assert.match(browserHostSource, /BeginWindowGate/);
-  assert.match(browserHostSource, /DwmSetWindowAttribute/);
+  assert.match(windowInteropSource, /DwmSetWindowAttribute/);
   assert.match(browserHostSource, /WaitForWindowReadyToReveal/);
-  assert.match(browserHostSource, /DwmFlush/);
+  assert.match(windowInteropSource, /DwmFlush/);
   assert.match(browserHostSource, /ReleaseWindowGate/);
   assert.match(browserHostSource, /Track-ManagedChromeWindow/);
   assert.doesNotMatch(browserHostSource, /Windows Chrome 在初始化期间退出/);

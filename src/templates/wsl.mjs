@@ -1,5 +1,5 @@
-export function renderWindowsHostBrowser() {
-  return String.raw`param(
+export function renderWindowsHostBrowser({ precompiledInterop = false } = {}) {
+  const script = String.raw`param(
   [Parameter(Mandatory=$true)][string]$ConfigPath,
   [ValidateSet('Run', 'Activate', 'Stop')][string]$Mode = 'Run'
 )
@@ -10,6 +10,12 @@ $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $Utf8NoBom
 $OutputEncoding = $Utf8NoBom
 $Config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$StartupClock = [System.Diagnostics.Stopwatch]::StartNew()
+function Write-StartupPhase([string]$Phase) {
+  if ($Mode -ne 'Run' -or -not $Config.startupTimingPath) { return }
+  $Line = '[{0}] {1}: {2} ms' -f [datetime]::UtcNow.ToString('o'), $Phase, $StartupClock.ElapsedMilliseconds
+  [System.IO.File]::AppendAllText([string]$Config.startupTimingPath, $Line + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+}
 $DevToolsPortFile = Join-Path $Config.chromeProfilePath 'DevToolsActivePort'
 Add-Type -AssemblyName System.Net.Http
 $HttpClient = [System.Net.Http.HttpClient]::new()
@@ -37,6 +43,7 @@ public static class OmdChromeWindow {
   private const uint SmtoAbortIfHung = 0x0002;
   private const uint RdwFirstPaint = 0x0001 | 0x0080 | 0x0100;
   private const int DwmwaCloak = 13;
+  private const int DwmwaTransitionsForceDisabled = 3;
   private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
   private delegate void WinEventDelegate(IntPtr hook, uint eventType, IntPtr window, int objectId, int childId, uint threadId, uint eventTime);
   [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
@@ -56,6 +63,8 @@ public static class OmdChromeWindow {
   [DllImport("user32.dll")] private static extern bool PostThreadMessage(uint threadId, uint message, UIntPtr wParam, IntPtr lParam);
   [DllImport("user32.dll")] private static extern bool GetWindowPlacement(IntPtr hwnd, ref WindowPlacement placement);
   [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+  [DllImport("user32.dll")] private static extern IntPtr MonitorFromPoint(Point point, uint flags);
+  [DllImport("user32.dll")] private static extern bool GetCursorPos(out Point point);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
   [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
   [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
@@ -187,11 +196,19 @@ public static class OmdChromeWindow {
       Interlocked.Exchange(ref gateActive, 0);
       StopWindowGate();
       if (!IsWindow(hwnd)) return false;
-      SetWindowCloaked(hwnd, false);
       ShowWindow(hwnd, 9);
+      DwmFlush();
+      SetWindowCloaked(hwnd, false);
       SetForegroundWindow(hwnd);
       return IsWindowVisible(hwnd);
     }
+  }
+
+  public static void PrepareWindowForReveal(long handle) {
+    var hwnd = new IntPtr(handle);
+    SetWindowCloaked(hwnd, true);
+    ShowWindow(hwnd, 9);
+    DwmFlush();
   }
 
   public static bool WaitForWindowReadyToReveal(long handle, int timeoutMilliseconds) {
@@ -273,7 +290,6 @@ public static class OmdChromeWindow {
       lock (GateSync) {
         if (Interlocked.CompareExchange(ref gateActive, 0, 0) != 0) {
           SetWindowCloaked(window, true);
-          ShowWindow(window, 0);
         }
       }
       return;
@@ -287,7 +303,6 @@ public static class OmdChromeWindow {
         if (eventType == EventObjectShow) gateShownCandidates.Add(handle);
       }
       SetWindowCloaked(window, true);
-      ShowWindow(window, 0);
     }
     lock (GateSync) {
       if (!gateCandidates.Add(handle)) return;
@@ -302,7 +317,6 @@ public static class OmdChromeWindow {
       if (Interlocked.CompareExchange(ref gateActive, 0, 0) == 0) return;
       if (WindowMatchesExecutable(window, gateExecutablePath)) {
         SetWindowCloaked(window, true);
-        ShowWindow(window, 0);
         var appId = GetStringProperty(window.ToInt64(), 5);
         var matchesExpectedApp = string.IsNullOrWhiteSpace(gateExpectedAppId)
           ? GateCandidateWasShown(window.ToInt64())
@@ -310,7 +324,6 @@ public static class OmdChromeWindow {
         if (matchesExpectedApp) {
           if (Interlocked.CompareExchange(ref gateHandle, window.ToInt64(), 0) == 0) {
             SetWindowCloaked(window, true);
-            ShowWindow(window, 0);
             gateCaptured.Set();
           }
           return;
@@ -351,7 +364,13 @@ public static class OmdChromeWindow {
 
   private static bool SetWindowCloaked(IntPtr hwnd, bool cloaked) {
     var value = cloaked ? 1 : 0;
-    return DwmSetWindowAttribute(hwnd, DwmwaCloak, ref value, sizeof(int)) >= 0;
+    if (cloaked) DwmSetWindowAttribute(hwnd, DwmwaTransitionsForceDisabled, ref value, sizeof(int));
+    var result = DwmSetWindowAttribute(hwnd, DwmwaCloak, ref value, sizeof(int)) >= 0;
+    if (!cloaked) {
+      DwmFlush();
+      DwmSetWindowAttribute(hwnd, DwmwaTransitionsForceDisabled, ref value, sizeof(int));
+    }
+    return result;
   }
 
   private static bool GateCandidateWasShown(long handle) {
@@ -416,16 +435,29 @@ public static class OmdChromeWindow {
     var hwnd = new IntPtr(handle);
     if (!IsWindow(hwnd) || requestedWidth <= 0 || requestedHeight <= 0) return false;
     var monitor = MonitorFromWindow(hwnd, 2);
-    if (monitor == IntPtr.Zero) return false;
+    var bounds = CenteredBounds(monitor, requestedWidth, requestedHeight);
+    return ApplyBounds(handle, bounds);
+  }
+  public static int[] GetStartupBounds(int requestedWidth, int requestedHeight) {
+    Point cursor;
+    if (!GetCursorPos(out cursor)) cursor = new Point();
+    return CenteredBounds(MonitorFromPoint(cursor, 2), requestedWidth, requestedHeight);
+  }
+  private static int[] CenteredBounds(IntPtr monitor, int requestedWidth, int requestedHeight) {
+    if (monitor == IntPtr.Zero) return null;
     var info = new MonitorInfo { size = Marshal.SizeOf(typeof(MonitorInfo)) };
-    if (!GetMonitorInfo(monitor, ref info)) return false;
+    if (!GetMonitorInfo(monitor, ref info)) return null;
     var workWidth = info.work.right - info.work.left;
     var workHeight = info.work.bottom - info.work.top;
-    var width = Math.Max(320, Math.Min(requestedWidth, workWidth));
-    var height = Math.Max(240, Math.Min(requestedHeight, workHeight));
+    var width = Math.Min(workWidth, Math.Max(320, requestedWidth > 0 ? requestedWidth : workWidth * 3 / 4));
+    var height = Math.Min(workHeight, Math.Max(240, requestedHeight > 0 ? requestedHeight : workHeight * 4 / 5));
     var x = info.work.left + (workWidth - width) / 2;
     var y = info.work.top + (workHeight - height) / 2;
-    return SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height, 0x0004 | 0x0010);
+    return new[] { x, y, width, height };
+  }
+  public static bool ApplyBounds(long handle, int[] bounds) {
+    if (bounds == null || bounds.Length != 4 || !IsWindow(new IntPtr(handle))) return false;
+    return SetWindowPos(new IntPtr(handle), IntPtr.Zero, bounds[0], bounds[1], bounds[2], bounds[3], 0x0004 | 0x0010);
   }
   public static bool Close(long handle) {
     var hwnd = new IntPtr(handle);
@@ -590,6 +622,10 @@ function Save-WindowSize([long]$Handle) {
 }
 
 function Restore-WindowSizeAndCenter([long]$Handle) {
+  if ($script:StartupBounds) {
+    [OmdChromeWindow]::ApplyBounds($Handle, $script:StartupBounds) | Out-Null
+    return
+  }
   $Saved = Read-SavedWindowSize
   if ($Saved) {
     $Width = [int]$Saved.width
@@ -667,7 +703,8 @@ function Start-PwaWindow([datetime]$Deadline) {
   $GateStarted = Start-WindowGate $Baseline ([string]$Config.sourceAppUserModelId)
   $WindowWasGated = $false
   $Handle = 0
-  $QuotedArguments = @($Config.pwaArguments | ForEach-Object {
+  $LaunchArguments = @($Config.pwaArguments) + @(Get-StartupWindowArguments)
+  $QuotedArguments = @($LaunchArguments | ForEach-Object {
     $Value = [string]$_
     if ($Value -match '[\s"]') { '"' + $Value.Replace('"', '\"') + '"' } else { $Value }
   })
@@ -768,6 +805,19 @@ function Wait-ForLaunchSurface([datetime]$Deadline) {
   throw ("Windows 宿主机无法读取启动页 {0}" -f $Config.url)
 }
 
+function Wait-ForLoadingFrame([datetime]$Deadline) {
+  $FrameUrl = [Uri]::new([Uri]([string]$Config.url), '/__omd_first_frame').AbsoluteUri
+  while ([datetime]::UtcNow -lt $Deadline) {
+    $Response = $null
+    try {
+      $Response = $HttpClient.GetAsync($FrameUrl).GetAwaiter().GetResult()
+      if ($Response.IsSuccessStatusCode) { Write-StartupPhase 'loading-first-frame'; return }
+    } catch {} finally { if ($Response) { $Response.Dispose() } }
+    Start-Sleep -Milliseconds 30
+  }
+  throw '小鲸鱼首帧尚未绘制完成'
+}
+
 function Test-PageHandoff {
   $Response = $null
   try {
@@ -837,6 +887,17 @@ function Stop-ManagedChrome {
   $script:BrowserProcess = $null
 }
 
+function Get-StartupWindowArguments {
+  $SavedSize = Read-SavedWindowSize
+  $Width = if ($SavedSize) { [int]$SavedSize.width } else { 0 }
+  $Height = if ($SavedSize) { [int]$SavedSize.height } else { 0 }
+  $script:StartupBounds = [OmdChromeWindow]::GetStartupBounds($Width, $Height)
+  if ($script:StartupBounds) {
+    '--window-size={0},{1}' -f $script:StartupBounds[2], $script:StartupBounds[3]
+    '--window-position={0},{1}' -f $script:StartupBounds[0], $script:StartupBounds[1]
+  }
+}
+
 function Start-HostChrome {
   Stop-ManagedChrome
   New-Item -ItemType Directory -Path $Config.chromeProfilePath -Force | Out-Null
@@ -848,9 +909,11 @@ function Start-HostChrome {
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-background-mode',
+    '--disable-backgrounding-occluded-windows',
     '--disable-session-crashed-bubble',
     '--hide-crash-restore-bubble'
   )
+  $Arguments += @(Get-StartupWindowArguments)
   $script:BrowserProcess = Start-Process -FilePath $Config.chromePath -ArgumentList $Arguments -PassThru
   [System.IO.File]::WriteAllText([string]$Config.browserPidPath, [string]$script:BrowserProcess.Id, [System.Text.Encoding]::ASCII)
 }
@@ -874,8 +937,10 @@ function Wait-ForAppTarget([datetime]$Deadline) {
 }
 
 function Run-BrowserLifecycle {
+  Write-StartupPhase 'bridge-ready'
   $ServiceDeadline = [datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)
   if ($Config.loadingMode) { Wait-ForLaunchSurface $ServiceDeadline } else { Wait-ForHostService $ServiceDeadline }
+  Write-StartupPhase 'loading-surface-ready'
   if ($Config.launchMode -eq 'installed-pwa') {
     $Handle = Start-PwaWindow ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30)))
     Wait-ForWindowToClose $Handle
@@ -886,6 +951,7 @@ function Run-BrowserLifecycle {
   $GateStarted = Start-WindowGate $WindowBaseline ''
   $WindowWasGated = $false
   Start-HostChrome
+  Write-StartupPhase 'chrome-started'
   $BrowserDeadline = [datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30))
   Wait-ForDevTools $BrowserDeadline
   $Target = Wait-ForAppTarget ([datetime]::UtcNow.AddSeconds([Math]::Min([int]$Config.timeoutSeconds, 30)))
@@ -898,15 +964,18 @@ function Run-BrowserLifecycle {
     $WindowHandle = Wait-ForNewChromeWindow $WindowBaseline $WindowDeadline '无法确认 Windows Chrome App 窗口已打开'
   }
   Track-ManagedChromeWindow $WindowHandle
+  if ($WindowWasGated) { [OmdChromeWindow]::PrepareWindowForReveal($WindowHandle) }
   Set-TaskbarIdentity $WindowHandle
   Restore-WindowSizeAndCenter $WindowHandle
   if ($WindowWasGated) {
+    if ($Config.requireFirstFrame) { Wait-ForLoadingFrame ([datetime]::UtcNow.AddSeconds(5)) }
     [OmdChromeWindow]::WaitForWindowReadyToReveal($WindowHandle, 1500) | Out-Null
     if (-not [OmdChromeWindow]::ReleaseWindowGate($WindowHandle)) { throw '无法显示准备完成的 Windows Chrome App 窗口' }
   } else {
     [OmdChromeWindow]::Activate($WindowHandle) | Out-Null
   }
   [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$WindowHandle, [System.Text.Encoding]::ASCII)
+  Write-StartupPhase 'window-visible'
   Invoke-DevTools ('/json/activate/' + [string]$Target.id) | Out-Null
   if ($Config.loadingMode) {
     $VisibleUrl = [Uri]::new([Uri]([string]$Config.url), '/__omd_window_visible').AbsoluteUri
@@ -914,6 +983,7 @@ function Run-BrowserLifecycle {
     $VisibleResponse.Dispose()
   }
   if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) $WindowHandle }
+  Write-StartupPhase 'page-ready'
   while ($true) {
     Save-WindowSize $WindowHandle
     $Snapshot = Get-TargetSnapshot
@@ -956,4 +1026,11 @@ try {
 }
 exit $ExitCode
 `;
+  return precompiledInterop
+    ? script.replace(/Add-Type -TypeDefinition @'\n[\s\S]*?\n'@/, "Add-Type -Path (Join-Path $PSScriptRoot 'window-interop.dll')")
+    : script;
+}
+
+export function renderWindowsWindowInteropSource() {
+  return renderWindowsHostBrowser().match(/Add-Type -TypeDefinition @'\n([\s\S]*?)\n'@/)[1];
 }

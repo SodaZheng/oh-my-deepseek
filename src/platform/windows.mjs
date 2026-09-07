@@ -7,7 +7,7 @@ import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import { renderWindowsNativeLauncherSource, renderWindowsShortcutScript } from "../templates/windows.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
 import { renderMacOnDemandProxy } from "../templates/macos-on-demand.mjs";
-import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
+import { renderWindowsHostBrowser, renderWindowsWindowInteropSource } from "../templates/wsl.mjs";
 import { resolveDirectWindowsService, warmDirectServiceCompileCache } from "../service-command.mjs";
 import { ensureDirectory, pathExists, powershellSingleQuote, removeExactTarget, writeText } from "../utils.mjs";
 
@@ -102,6 +102,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       nodePath: config.nodePath,
       chromeProfilePath: profileDirectory,
       hostBrowserScriptPath,
+      hostBrowserExecutablePath: path.join(supportDirectory, "browser-host.exe"),
       hostBrowserConfigPath,
       hostBrowserErrorPath,
       lockPath: path.join(stateDirectory, "supervisor.lock"),
@@ -120,6 +121,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       chromeProfilePath: profileDirectory,
       launchMode: "url-app",
       loadingMode: usesLoadingScreen,
+      requireFirstFrame: usesLoadingScreen,
       launchUrlPath: usesLoadingScreen ? path.join(stateDirectory, "launch-url.txt") : null,
       pwaLauncherPath: null,
       pwaArguments: [],
@@ -130,6 +132,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       windowHandlePath,
       browserPidPath: path.join(supportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,
+      startupTimingPath: path.join(stateDirectory, "browser-startup.log"),
     };
     const loadingConfig = usesLoadingScreen ? {
       generatedBy: GENERATED_BY,
@@ -145,6 +148,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       timeoutSeconds: config.timeoutSeconds,
       minimumLoadingMilliseconds: 900,
       waitForWindowReveal: true,
+      earlyLoading: true,
       readyPath: path.join(stateDirectory, "loading.ready"),
       launchUrlPath: path.join(stateDirectory, "launch-url.txt"),
       errorPath: path.join(stateDirectory, "loading-error.txt"),
@@ -162,7 +166,14 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       missingMessage: `创建 ${config.name} 时使用的 Node.js 已被移动或删除：${config.nodePath}`,
     }));
     await writeText(path.join(stagingDirectory, "supervisor.mjs"), renderSupervisor());
-    await writeText(path.join(stagingDirectory, "browser-host.ps1"), withUtf8Bom(renderWindowsHostBrowser()));
+    await writeText(path.join(stagingDirectory, "browser-host.ps1"), withUtf8Bom(renderWindowsHostBrowser({ precompiledInterop: true })));
+    await writeText(path.join(stagingDirectory, "window-interop.cs"), renderWindowsWindowInteropSource());
+    await writeText(path.join(stagingDirectory, "browser-host.cs"), renderWindowsNativeLauncherSource({
+      programPath: powerShellPath,
+      programArguments: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", hostBrowserScriptPath, "-ConfigPath", hostBrowserConfigPath],
+      appUserModelId, passThroughArguments: true,
+      missingTitle: "Windows 窗口启动失败", missingMessage: `找不到 PowerShell：${powerShellPath}`,
+    }));
     await writeText(path.join(stagingDirectory, "browser-config.json"), `${JSON.stringify(browserConfig, null, 2)}\n`);
     await copyFile(bundledLoadingIcon, path.join(stagingDirectory, "loading-whale.png"));
     if (loadingConfig) {
@@ -179,6 +190,9 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       outputPath: nativeLauncherExecutablePath,
     });
     if (!(await pathExists(nativeLauncherExecutablePath))) throw new Error("Windows 原生启动器编译完成但 launcher.exe 不存在");
+    for (const [name, extension, outputType] of [["window-interop", "dll", "Library"], ["browser-host", "exe", "WindowsApplication"]]) {
+      compileWindowsLauncher({ powerShellPath, sourcePath: path.join(stagingDirectory, `${name}.cs`), outputPath: path.join(stagingDirectory, `${name}.${extension}`), outputType });
+    }
 
     if (await pathExists(shortcutPath)) await removeExactTarget(shortcutPath);
     if (await pathExists(supportDirectory)) await removeExactTarget(supportDirectory);
@@ -349,8 +363,8 @@ function createWindowsShortcut({ shortcutPath, launcherPath, supportDirectory, i
   }
 }
 
-function compileWindowsLauncher({ powerShellPath, sourcePath, outputPath }) {
-  const script = `Add-Type -Path ${powershellSingleQuote(sourcePath)} -OutputAssembly ${powershellSingleQuote(outputPath)} -OutputType WindowsApplication`;
+function compileWindowsLauncher({ powerShellPath, sourcePath, outputPath, outputType = "WindowsApplication" }) {
+  const script = `Add-Type -Path ${powershellSingleQuote(sourcePath)} -OutputAssembly ${powershellSingleQuote(outputPath)} -OutputType ${outputType}`;
   const result = spawnSync(powerShellPath, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
     encoding: "utf8",
     windowsHide: true,

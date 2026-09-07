@@ -240,7 +240,8 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /DwmFlush/);
   assert.match(browserHost, /stableReadings >= 6/);
   assert.match(browserHost, /RedrawWindow/);
-  assert.match(browserHost, /ShowWindow\(window, 0\)/);
+  assert.doesNotMatch(browserHost, /ShowWindow\(window, 0\)/);
+  assert.match(browserHost, /Wait-ForLoadingFrame/);
   const windowGateCallback = browserHost.slice(
     browserHost.indexOf("private static void OnGateWindowEvent"),
     browserHost.indexOf("private static void InspectGateCandidate"),
@@ -295,8 +296,13 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.match(browserHost, /PostMessage\(hwnd, 0x0010/);
   assert.match(browserHost, /taskkill\.exe/);
   assert.match(browserHost, /\('--app="' \+ \$script:LaunchUrl \+ '"'\)/);
-  assert.doesNotMatch(browserHost, /--window-position=/);
-  assert.doesNotMatch(browserHost, /--window-size=/);
+  assert.match(browserHost, /--window-position=\{0\},\{1\}/);
+  assert.doesNotMatch(browserHost, /--window-position=-?\d+,-?\d+/);
+  assert.match(browserHost, /GetStartupBounds\(\$Width, \$Height\)/);
+  assert.match(browserHost, /\$SavedSize = Read-SavedWindowSize/);
+  assert.match(browserHost, /--window-size=\{0\},\{1\}/);
+  assert.doesNotMatch(browserHost, /--window-size=\d+,\d+/);
+  assert.doesNotMatch(browserHost, /--start-minimized/);
   assert.match(browserHost, /function Run-BrowserLifecycle \{[\s\S]*Wait-ForHostService \$ServiceDeadline[\s\S]*Start-HostChrome/);
   assert.match(browserHost, /Config\.loadingMode[\s\S]*Wait-ForLaunchSurface/);
   assert.doesNotMatch(browserHost, /Preparing%20Chrome%20Runtime|--window-position=-10000,-10000|function Open-AppWindow/);

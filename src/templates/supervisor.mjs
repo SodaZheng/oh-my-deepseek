@@ -129,12 +129,8 @@ function processIsAlive(pid) {
 
 async function activateExistingApp() {
   if (config.launchMode === "windows-host-browser") {
-    spawnSync(powerShellExecutable(), [
-      "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-      "-File", config.hostBrowserScriptPath,
-      "-ConfigPath", config.hostBrowserConfigPath,
-      "-Mode", "Activate",
-    ], { windowsHide: true, stdio: "ignore", timeout: 5000 });
+    const command = windowsBrowserCommand("Activate");
+    spawnSync(command.executable, command.arguments, { windowsHide: true, stdio: "ignore", timeout: 5000 });
     return;
   }
   if (config.platform === "darwin" && config.chromeShimPath) {
@@ -191,12 +187,8 @@ async function runWindowsHostBrowser() {
 function startWindowsBrowserBridge() {
   appendFileSync(config.logPath, \`[\${new Date().toISOString()}] 启动 Windows Chrome 桥接器\n\`);
   const descriptor = openSync(config.logPath, "a", 0o600);
-  const child = spawn(powerShellExecutable(), [
-    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-    "-File", config.hostBrowserScriptPath,
-    "-ConfigPath", config.hostBrowserConfigPath,
-    "-Mode", "Run",
-  ], {
+  const command = windowsBrowserCommand("Run");
+  const child = spawn(command.executable, command.arguments, {
     detached: false,
     windowsHide: true,
     stdio: ["ignore", descriptor, descriptor],
@@ -214,12 +206,18 @@ function waitForChildExit(child) {
 
 function stopWindowsBrowserBridge() {
   if (config.launchMode !== "windows-host-browser") return;
-  spawnSync(powerShellExecutable(), [
+  const command = windowsBrowserCommand("Stop");
+  spawnSync(command.executable, command.arguments, { windowsHide: true, stdio: "ignore", timeout: 5000 });
+}
+
+function windowsBrowserCommand(mode) {
+  if (config.hostBrowserExecutablePath) {
+    return { executable: config.hostBrowserExecutablePath, arguments: ["-Mode", mode] };
+  }
+  return { executable: powerShellExecutable(), arguments: [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-    "-File", config.hostBrowserScriptPath,
-    "-ConfigPath", config.hostBrowserConfigPath,
-    "-Mode", "Stop",
-  ], { windowsHide: true, stdio: "ignore", timeout: 5000 });
+    "-File", config.hostBrowserScriptPath, "-ConfigPath", config.hostBrowserConfigPath, "-Mode", mode,
+  ] };
 }
 
 async function runChromeAppShim() {

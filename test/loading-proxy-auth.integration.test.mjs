@@ -8,7 +8,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {renderMacOnDemandProxy} from '../src/templates/macos-on-demand.mjs';
 
-test('loading proxy exchanges the DSH launch token without granting anonymous browser access', {timeout:15000}, async t => {
+for (const earlyLoading of [false, true]) test(`loading proxy keeps authentication with early loading ${earlyLoading}`, {timeout:15000}, async t => {
   const root=await mkdtemp(path.join(os.tmpdir(),'omd-auth-test-'));
   const proxyPath=path.join(root,'proxy.mjs');
   const configPath=path.join(root,'config.json');
@@ -21,6 +21,7 @@ test('loading proxy exchanges the DSH launch token without granting anonymous br
   const token='fixture-launch-secret';
   await writeFile(proxyPath,renderMacOnDemandProxy());
   await writeFile(servicePath,`import http from 'node:http';
+import {existsSync} from 'node:fs';
 const port=Number(process.argv[process.argv.indexOf('--port')+1]);
 const host=${JSON.stringify(`127.0.0.1:${port}`)};
 const token=${JSON.stringify(token)};
@@ -40,14 +41,17 @@ const server=http.createServer((req,res)=>{
  res.setHeader('content-type','text/html');
  res.end('<title>DeepSeek Harness</title><script>window.__DSH_BOOT__={"entries":[{"id":"ready","url":"/plugins/ready.js"}]}</script>');
 });
+function start(){
+if(${earlyLoading} && !existsSync(${JSON.stringify(path.join(root,'start-backend'))})){setTimeout(start,20);return;}
 server.listen(port,'127.0.0.1',()=>{
  process.stdout.write('dsh web: http://127.0.0.1:'+port+'/?tok');
  setTimeout(()=>process.stdout.write('en='+token+'\\n'),20);
 });
+}start();
 `);
   await writeFile(configPath,JSON.stringify({url:origin+'/',readyHost:'127.0.0.1',readyPort:port,timeoutSeconds:8,
     serviceCommand:'dsh web --no-open',workingDirectory:root,logPath,launchUrlPath,readyPath:path.join(root,'ready'),errorPath:path.join(root,'error'),
-    minimumLoadingMilliseconds:1,loadingIconPath:path.resolve('assets/windows-icon-master-v2.png'),
+    earlyLoading,waitForWindowReveal:earlyLoading,minimumLoadingMilliseconds:1,loadingIconPath:path.resolve('assets/windows-icon-master-v2.png'),
     directService:{executable:process.execPath,arguments:[servicePath],serviceKind:'dsh-web'}}));
   const env={...process.env};delete env.OMD_LISTEN_FD;
   const proxy=spawn(process.execPath,[proxyPath,configPath],{env,windowsHide:true,stdio:'ignore'});
@@ -59,17 +63,45 @@ server.listen(port,'127.0.0.1',()=>{
     }
     await rm(root,{recursive:true,force:true});
   });
+  let bootstrapCookie;
+  if(earlyLoading){
+    let earlyUrl;
+    const deadline=Date.now()+5000;
+    while(!earlyUrl && Date.now()<deadline){try{earlyUrl=await readFile(launchUrlPath,'utf8');}catch{await new Promise(r=>setTimeout(r,20));}}
+    assert.ok(earlyUrl,'launch surface waited for backend startup');
+    const loading=await fetch(earlyUrl);
+    assert.equal(loading.status,200);
+    assert.match(await loading.text(),/id="omd-launch"/);
+    bootstrapCookie=loading.headers.get('set-cookie').split(';',1)[0];
+    assert.equal((await fetch(origin+'/__omd_ready')).status,503);
+    await writeFile(path.join(root,'start-backend'),'go');
+  }
   let ready=false;
   const deadline=Date.now()+10000;
   while(Date.now()<deadline && proxy.exitCode===null){try{ready=(await fetch(origin+'/__omd_ready')).status===204;if(ready)break;}catch{}await new Promise(r=>setTimeout(r,50));}
   assert.ok(ready,await readFile(logPath,'utf8'));
   const launchUrl=await readFile(launchUrlPath,'utf8');
   assert.equal(new URL(launchUrl).origin,origin);
-  assert.equal(new URL(launchUrl).searchParams.get('token'),token);
+  assert.equal(new URL(launchUrl).searchParams.get('token'),earlyLoading ? null : token);
   assert.equal((await fetch(origin+'/?__omd_launch=1',{headers:{accept:'text/html'}})).status,401);
   assert.equal((await fetch(origin+'/api/test')).status,401);
-  const login=await fetch(launchUrl,{redirect:'manual'});
-  assert.equal(login.status,303);
+  let login;
+  if(earlyLoading){
+    const anonymous=await fetch(origin+'/__omd_browser_ready');
+    assert.equal(anonymous.status,401);
+    assert.equal(anonymous.headers.get('set-cookie'),null);
+    const beforeReveal=await fetch(origin+'/__omd_browser_ready',{headers:{cookie:bootstrapCookie}});
+    assert.equal(beforeReveal.status,503);
+    assert.equal(beforeReveal.headers.get('set-cookie'),null);
+    await fetch(origin+'/__omd_window_visible',{method:'POST'});
+    await new Promise(r=>setTimeout(r,5));
+    login=await fetch(origin+'/__omd_browser_ready',{headers:{cookie:bootstrapCookie}});
+    assert.equal(login.status,204);
+    assert.equal((await fetch(origin+'/api/test',{headers:{cookie:bootstrapCookie}})).status,401);
+  }else{
+    login=await fetch(launchUrl,{redirect:'manual'});
+    assert.equal(login.status,303);
+  }
   const cookie=login.headers.get('set-cookie').split(';',1)[0];
   const document=await fetch(origin+'/?__omd_launch=1',{headers:{cookie,accept:'text/html'}});
   assert.equal(document.status,200);

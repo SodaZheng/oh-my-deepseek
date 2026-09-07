@@ -13,6 +13,7 @@ import { spawn, spawnSync } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 
 const config = JSON.parse(readFileSync(process.argv[2], "utf8"));
 const listenFd = Number(process.env.OMD_LISTEN_FD);
@@ -30,9 +31,13 @@ let backendPort = null;
 let backendReady = false;
 let serviceToken = null;
 let readinessCookie = "";
+let readinessSetCookie = [];
+const earlyLaunchNonce = config.earlyLoading && config.launchUrlPath ? randomBytes(32).toString("hex") : null;
+const earlyCookieName = "omd_launch_" + (publicUrl.port || "80");
 let browserLoadingServed = false;
 let handoffComplete = false;
 let windowRevealedAt = null;
+let firstFrameReady = false;
 let startupFailure = null;
 
 mkdirSync(path.dirname(config.logPath), { recursive: true });
@@ -54,6 +59,12 @@ proxy.listen(listenOptions, () => void main());
 
 async function main() {
   try {
+    if (earlyLaunchNonce) {
+      const launchUrl = new URL(config.url);
+      launchUrl.searchParams.set("__omd_boot", earlyLaunchNonce);
+      writeFileSync(config.launchUrlPath, launchUrl.href, { mode: 0o600 });
+      writeLog("小鲸鱼启动页已就绪，正在并行启动服务");
+    }
     if (config.directService?.serviceKind !== "dsh-web") {
       throw new Error("小鲸鱼 loading 按需模式当前要求服务命令为 dsh web");
     }
@@ -64,9 +75,9 @@ async function main() {
     }
     const minimumLoadingMilliseconds = Number(config.minimumLoadingMilliseconds) || 900;
     const remainingLoadingTime = minimumLoadingMilliseconds - (Date.now() - loadingStartedAt);
-    if (remainingLoadingTime > 0) await delay(remainingLoadingTime);
+    if (!config.waitForWindowReveal && remainingLoadingTime > 0) await delay(remainingLoadingTime);
     backendReady = true;
-    if (config.launchUrlPath) {
+    if (config.launchUrlPath && !earlyLaunchNonce) {
       const launchUrl = new URL(config.url);
       if (serviceToken) launchUrl.searchParams.set("token", serviceToken);
       writeFileSync(config.launchUrlPath, launchUrl.href, { mode: 0o600 });
@@ -80,6 +91,24 @@ async function main() {
 
 function handleRequest(request, response) {
   const requestUrl = new URL(request.url || "/", publicUrl);
+  if (requestUrl.pathname === "/__omd_first_frame") {
+    if (request.method === "POST") firstFrameReady = true;
+    response.writeHead(firstFrameReady ? 204 : 503, { "cache-control": "no-store" });
+    response.end();
+    return;
+  }
+  if (earlyLaunchNonce && request.method === "GET" && requestUrl.pathname === publicUrl.pathname
+    && requestUrl.searchParams.get("__omd_boot") === earlyLaunchNonce) {
+    if (/Chrome\\\//i.test(String(request.headers["user-agent"] || ""))) browserLoadingServed = true;
+    const html = personalize(loadingTemplate);
+    response.writeHead(200, {
+      "content-type": "text/html; charset=utf-8", "content-length": Buffer.byteLength(html),
+      "cache-control": "no-store", "referrer-policy": "no-referrer",
+      "set-cookie": earlyCookieName + "=" + earlyLaunchNonce + "; Path=/; HttpOnly; SameSite=Strict",
+    });
+    response.end(html);
+    return;
+  }
   if (requestUrl.pathname === "/__omd_window_visible" && request.method === "POST") {
     windowRevealedAt ||= Date.now();
     response.writeHead(204, { "cache-control": "no-store" });
@@ -89,7 +118,17 @@ function handleRequest(request, response) {
   if (requestUrl.pathname === "/__omd_browser_ready") {
     const visible = !config.waitForWindowReveal || (windowRevealedAt !== null
       && Date.now() - windowRevealedAt >= (Number(config.minimumLoadingMilliseconds) || 900));
-    response.writeHead(backendReady && visible ? 204 : 503, { "cache-control": "no-store" });
+    const headers = { "cache-control": "no-store" };
+    if (backendReady && earlyLaunchNonce && serviceToken) {
+      const authorizedLaunch = String(request.headers.cookie || "").split(";").some((part) => part.trim() === earlyCookieName + "=" + earlyLaunchNonce);
+      if (!authorizedLaunch) {
+        response.writeHead(401, headers);
+        response.end();
+        return;
+      }
+      if (visible) headers["set-cookie"] = readinessSetCookie;
+    }
+    response.writeHead(backendReady && visible ? 204 : 503, headers);
     response.end();
     return;
   }
@@ -356,7 +395,8 @@ async function serviceIsReady(port) {
     if (serviceToken && !readinessCookie) {
       const login = await readBackendPage(port, "/?token=" + encodeURIComponent(serviceToken));
       if (login.status === 303 && login.headers.location === "/") {
-        readinessCookie = (login.headers["set-cookie"] || []).map((cookie) => cookie.split(";", 1)[0]).join("; ");
+        readinessSetCookie = login.headers["set-cookie"] || [];
+        readinessCookie = readinessSetCookie.map((cookie) => cookie.split(";", 1)[0]).join("; ");
       }
     }
     const response = await readBackendPage(port, "/", readinessCookie);

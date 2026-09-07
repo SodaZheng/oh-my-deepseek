@@ -7,7 +7,7 @@ import { CONFIG_VERSION, GENERATED_BY } from "../constants.mjs";
 import { renderSupervisor } from "../templates/supervisor.mjs";
 import { renderMacOnDemandProxy } from "../templates/macos-on-demand.mjs";
 import { renderWindowsNativeLauncherSource, renderWindowsShortcutScript } from "../templates/windows.mjs";
-import { renderWindowsHostBrowser } from "../templates/wsl.mjs";
+import { renderWindowsHostBrowser, renderWindowsWindowInteropSource } from "../templates/wsl.mjs";
 import {
   parseSimpleServiceCommand,
   resolveDirectPosixService,
@@ -170,10 +170,12 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       nodePath: config.nodePath,
       chromeProfilePath: chromeProfilePathWsl,
       hostBrowserScriptPath,
+      hostBrowserExecutablePath: path.join(hostSupportDirectoryWsl, "browser-host.exe"),
       hostBrowserConfigPath,
       hostBrowserErrorPath: hostBrowserErrorPathWsl,
       lockPath,
       logPath,
+      launchUrlPath: usesLoadingScreen && !installedWebApp ? path.join(hostStateDirectoryWsl, "launch-url.txt") : null,
     };
     const browserConfig = {
       generatedBy: GENERATED_BY,
@@ -187,6 +189,8 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       chromeProfilePath,
       launchMode: installedWebApp ? "installed-pwa" : "url-app",
       loadingMode: usesLoadingScreen,
+      requireFirstFrame: usesLoadingScreen && !installedWebApp,
+      launchUrlPath: usesLoadingScreen && !installedWebApp ? path.win32.join(hostStateDirectory, "launch-url.txt") : null,
       pwaLauncherPath: installedWebApp?.launcherPath ?? null,
       pwaArguments: installedWebApp?.arguments ?? [],
       appUserModelId,
@@ -196,6 +200,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       windowHandlePath,
       browserPidPath: path.win32.join(hostSupportDirectory, "browser.pid"),
       lastErrorPath: hostBrowserErrorPath,
+      startupTimingPath: path.win32.join(hostStateDirectory, "browser-startup.log"),
     };
     const loadingConfig = usesLoadingScreen ? {
       generatedBy: GENERATED_BY,
@@ -210,6 +215,9 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       readyPort: config.readyPort,
       timeoutSeconds: config.timeoutSeconds,
       minimumLoadingMilliseconds: 900,
+      earlyLoading: !installedWebApp,
+      waitForWindowReveal: !installedWebApp,
+      launchUrlPath: !installedWebApp ? path.join(hostStateDirectoryWsl, "launch-url.txt") : null,
       readyPath: path.join(stateDirectory, "loading.ready"),
       errorPath: path.join(stateDirectory, "loading-error.txt"),
       loadingIconPath,
@@ -244,7 +252,14 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       missingTitle: "找不到 WSL",
       missingMessage: `找不到 Windows WSL 启动器：${windowsEnvironment.wsl}`,
     }));
-    await writeText(path.join(hostStagingDirectory, "browser-host.ps1"), withUtf8Bom(renderWindowsHostBrowser()));
+    await writeText(path.join(hostStagingDirectory, "browser-host.ps1"), withUtf8Bom(renderWindowsHostBrowser({ precompiledInterop: true })));
+    await writeText(path.join(hostStagingDirectory, "window-interop.cs"), renderWindowsWindowInteropSource());
+    await writeText(path.join(hostStagingDirectory, "browser-host.cs"), renderWindowsNativeLauncherSource({
+      programPath: windowsEnvironment.powerShell,
+      programArguments: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", hostBrowserScriptPath, "-ConfigPath", hostBrowserConfigPath],
+      appUserModelId, passThroughArguments: true,
+      missingTitle: "Windows 窗口启动失败", missingMessage: `找不到 PowerShell：${windowsEnvironment.powerShell}`,
+    }));
     await writeText(path.join(hostStagingDirectory, "create-shortcut.ps1"), withUtf8Bom(renderWindowsShortcutScript({ nativeLauncher: true })));
     await writeText(path.join(hostStagingDirectory, "wsl-launch.json"), `${JSON.stringify(launchConfig, null, 2)}\n`);
     await writeText(path.join(hostStagingDirectory, "browser-config.json"), `${JSON.stringify(browserConfig, null, 2)}\n`);
@@ -258,6 +273,11 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       outputPathWsl: nativeLauncherExecutableWsl,
     });
     if (!(await pathExists(nativeLauncherExecutableWsl))) throw new Error("Windows 原生启动器编译完成但 launcher.exe 不存在");
+    for (const [name, extension, outputType] of [["window-interop", "dll", "Library"], ["browser-host", "exe", "WindowsApplication"]]) {
+      const sourcePathWsl = path.join(hostStagingDirectory, `${name}.cs`);
+      const outputPathWsl = path.join(hostStagingDirectory, `${name}.${extension}`);
+      interop.compileNativeLauncher({ sourcePath: interop.toWindowsPath(sourcePathWsl), outputPath: interop.toWindowsPath(outputPathWsl), sourcePathWsl, outputPathWsl, outputType });
+    }
     await stopLegacyWslPrewarm(legacyPrewarmLockPath, legacyPrewarmScriptPath);
     if (await pathExists(legacyPrewarmReadyPath)) await removeExactTarget(legacyPrewarmReadyPath);
     interop.stopPwaMonitor?.({ monitorPath: path.win32.join(hostSupportDirectory, "pwa-monitor.exe") });
@@ -458,8 +478,8 @@ $Value = @{
       return null;
     }
   },
-  compileNativeLauncher({ sourcePath, outputPath }) {
-    const script = `Add-Type -Path ${powershellSingleQuote(sourcePath)} -OutputAssembly ${powershellSingleQuote(outputPath)} -OutputType WindowsApplication`;
+  compileNativeLauncher({ sourcePath, outputPath, outputType = "WindowsApplication" }) {
+    const script = `Add-Type -Path ${powershellSingleQuote(sourcePath)} -OutputAssembly ${powershellSingleQuote(outputPath)} -OutputType ${outputType}`;
     const result = runPowerShell(script);
     if (result.error || result.status !== 0) {
       throw new Error(`无法编译 Windows 原生启动器：${formatCommandError(result)}`);

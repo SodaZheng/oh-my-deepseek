@@ -20,7 +20,7 @@ WScript.Quit(shell.Run(command, 0, ${waitForExit ? "true" : "false"}));
 `;
 }
 
-export function renderWindowsNativeLauncherSource({ programPath, programArguments, appUserModelId, missingTitle, missingMessage }) {
+export function renderWindowsNativeLauncherSource({ programPath, programArguments, appUserModelId, missingTitle, missingMessage, passThroughArguments = false }) {
   const encoded = (value) => Buffer.from(String(value), "utf8").toString("base64");
   const argumentValues = programArguments.map((value) => `Decode("${encoded(value)}")`).join(", ");
   return `using System;
@@ -43,16 +43,20 @@ internal static class OhMyDeepSeekLauncher {
   private static extern int MessageBoxW(IntPtr window, string message, string title, uint type);
 
   [STAThread]
-  private static int Main() {
+  private static int Main(string[] arguments) {
     try {
       SetCurrentProcessExplicitAppUserModelID(AppUserModelId);
       if (!File.Exists(ProgramPath)) {
         MessageBoxW(IntPtr.Zero, MissingMessage, MissingTitle, 0x10);
         return 1;
       }
+      var commandArguments = ProgramArguments;
+      ${passThroughArguments ? `commandArguments = new string[ProgramArguments.Length + arguments.Length];
+      Array.Copy(ProgramArguments, commandArguments, ProgramArguments.Length);
+      Array.Copy(arguments, 0, commandArguments, ProgramArguments.Length, arguments.Length);` : ""}
       var startInfo = new ProcessStartInfo {
         FileName = ProgramPath,
-        Arguments = BuildCommandLine(ProgramArguments),
+        Arguments = BuildCommandLine(commandArguments),
         WorkingDirectory = Path.GetDirectoryName(ProgramPath),
         UseShellExecute = false,
         CreateNoWindow = true,

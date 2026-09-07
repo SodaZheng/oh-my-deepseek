@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { normalizeCreateOptions } from "../src/config.mjs";
 import { createWindowsLauncher } from "../src/platform/windows.mjs";
+import { resolveDirectWindowsService } from "../src/service-command.mjs";
 import { pathExists } from "../src/utils.mjs";
 import { renderWindowsHiddenLauncher, renderWindowsNativeLauncherSource, renderWindowsPwaMonitorSource } from "../src/templates/windows.mjs";
 
@@ -99,6 +100,21 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
     { encoding: "utf8", windowsHide: true },
   );
   assert.equal(browserHostCompileResult.status, 0, browserHostCompileResult.stderr || browserHostCompileResult.stdout);
+  const nativeHostPath = path.join(result.supportDirectory, "browser-host.exe");
+  const nativeHost = await readFile(nativeHostPath);
+  const peHeader = nativeHost.readUInt32LE(0x3c);
+  assert.equal(nativeHost.readUInt16LE(peHeader + 24 + 68), 2, "bridge must use the Windows GUI subsystem, not a console executable");
+  const nativeHostResult = spawnSync(nativeHostPath, ["-Mode", "Stop"], { encoding: "utf8", windowsHide: true });
+  assert.equal(nativeHostResult.status, 0, nativeHostResult.stderr || nativeHostResult.stdout);
+  const interopDll = path.join(result.supportDirectory, "window-interop.dll").replaceAll("'", "''");
+  const boundsProbe = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+    `Add-Type -Path '${interopDll}'; Add-Type -AssemblyName System.Windows.Forms; $Work=[System.Windows.Forms.Screen]::FromPoint([System.Windows.Forms.Cursor]::Position).WorkingArea; [Console]::Write((@{ bounds=[OmdChromeWindow]::GetStartupBounds(800,600); work=@($Work.X,$Work.Y,$Work.Width,$Work.Height) } | ConvertTo-Json -Compress))`,
+  ], { encoding: "utf8", windowsHide: true });
+  assert.equal(boundsProbe.status, 0, boundsProbe.stderr);
+  const { bounds, work } = JSON.parse(boundsProbe.stdout);
+  const expectedWidth = Math.min(800, work[2]);
+  const expectedHeight = Math.min(600, work[3]);
+  assert.deepEqual(bounds, [work[0] + Math.floor((work[2] - expectedWidth) / 2), work[1] + Math.floor((work[3] - expectedHeight) / 2), expectedWidth, expectedHeight]);
 
   const escapedShortcutPath = result.shortcutPath.replaceAll("'", "''");
   const shortcutCommand = `$Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut('${escapedShortcutPath}'); [Console]::WriteLine($Shortcut.TargetPath); [Console]::WriteLine($Shortcut.Arguments)`;
@@ -237,4 +253,24 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   );
   assert.equal(recreated.replacedExisting, true);
   assert.equal(await pathExists(staleSupportFile), false);
+});
+
+test("Windows npm DSH shim resolves to Node without starting a PowerShell service", {skip:process.platform!=="win32"}, async () => {
+  const {mkdir,rm}=await import('node:fs/promises');
+  const root=await mkdtemp(path.join(os.tmpdir(),'omd-node-shim-'));
+  try{
+    const packageRoot=path.join(root,'node_modules','@deepseek-ai','dsh');
+    await mkdir(path.join(packageRoot,'lib'),{recursive:true});
+    await writeFile(path.join(packageRoot,'package.json'),JSON.stringify({name:'@deepseek-ai/dsh',bin:{dsh:'lib/bin.js'}}));
+    const script=path.join(packageRoot,'lib','bin.js');
+    await writeFile(script,'console.log(JSON.stringify(process.argv.slice(2)))');
+    await writeFile(path.join(root,'dsh.ps1'),'#!/usr/bin/env pwsh\n$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n& "node" "$basedir/node_modules/@deepseek-ai/dsh/lib/bin.js" $args\n');
+    const servicePath=root+path.delimiter+process.env.PATH;
+    const direct=resolveDirectWindowsService({serviceCommand:'dsh web --no-open',servicePath,nodePath:process.execPath});
+    assert.equal(direct.executable,process.execPath);
+    assert.deepEqual(direct.arguments,[script,'web','--no-open']);
+    const result=spawnSync(direct.executable,direct.arguments,{encoding:'utf8',windowsHide:true});
+    assert.equal(result.status,0,result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout),['web','--no-open']);
+  }finally{await rm(root,{recursive:true,force:true});}
 });

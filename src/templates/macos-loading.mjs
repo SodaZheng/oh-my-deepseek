@@ -184,6 +184,16 @@ ${loadingMarkup}
 <script>
 (() => {
   const startedAt = Date.now();
+  const cleanUrl = new URL(location.href);
+  cleanUrl.searchParams.delete('__omd_boot');
+  history.replaceState(history.state, '', cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+  const firstFrame = async () => {
+    await Promise.all(Array.from(document.querySelectorAll('#omd-launch img'), image => image.decode().catch(() => {})));
+    await document.fonts.ready;
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await fetch('/__omd_first_frame', { method: 'POST', cache: 'no-store' });
+  };
+  firstFrame().catch(() => {});
   const poll = async () => {
     try {
       const response = await fetch('/__omd_browser_ready', { cache: 'no-store' });
