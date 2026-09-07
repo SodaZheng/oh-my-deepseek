@@ -106,6 +106,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       hostBrowserErrorPath,
       lockPath: path.join(stateDirectory, "supervisor.lock"),
       logPath,
+      launchUrlPath: path.join(stateDirectory, "launch-url.txt"),
     };
     const browserConfig = {
       generatedBy: GENERATED_BY,
@@ -119,6 +120,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       chromeProfilePath: profileDirectory,
       launchMode: "url-app",
       loadingMode: usesLoadingScreen,
+      launchUrlPath: usesLoadingScreen ? path.join(stateDirectory, "launch-url.txt") : null,
       pwaLauncherPath: null,
       pwaArguments: [],
       appUserModelId,
@@ -142,7 +144,9 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       readyPort: config.readyPort,
       timeoutSeconds: config.timeoutSeconds,
       minimumLoadingMilliseconds: 900,
+      waitForWindowReveal: true,
       readyPath: path.join(stateDirectory, "loading.ready"),
+      launchUrlPath: path.join(stateDirectory, "launch-url.txt"),
       errorPath: path.join(stateDirectory, "loading-error.txt"),
       loadingIconPath,
       logPath,
@@ -260,8 +264,8 @@ export async function inspectWindowsRestartPersistence(config, env = process.env
   const argumentsValue = lines.slice(1).join("\n");
   const ok = !inspected.error
     && inspected.status === 0
-    && path.basename(targetPath).toLowerCase() === "wscript.exe"
-    && argumentsValue.toLowerCase().includes(launcherPath.toLowerCase());
+    && path.win32.normalize(targetPath).toLowerCase() === path.win32.normalize(launcherPath).toLowerCase()
+    && argumentsValue.trim() === "";
   return {
     name: "重启后桌面启动",
     ok,

@@ -89,6 +89,7 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
     chromePath: fakeChrome,
     chromeProfilePath: path.join(root, "profile"),
     browserPidPath: path.join(root, "browser.pid"),
+    windowHandlePath: path.join(root, "app-window.txt"),
     lastErrorPath: path.join(root, "browser-error.txt"),
     appUserModelId: "OpenAI.OhMyDeepSeek.TestHarness",
   }));

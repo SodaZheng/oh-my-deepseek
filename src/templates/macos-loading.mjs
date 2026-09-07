@@ -186,7 +186,7 @@ ${loadingMarkup}
   const startedAt = Date.now();
   const poll = async () => {
     try {
-      const response = await fetch('/__omd_ready', { cache: 'no-store' });
+      const response = await fetch('/__omd_browser_ready', { cache: 'no-store' });
       if (response.ok) {
         const target = new URL(location.href);
         target.searchParams.set('__omd_launch', '1');

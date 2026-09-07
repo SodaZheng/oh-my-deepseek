@@ -197,7 +197,7 @@ function startWindowsBrowserBridge() {
     "-ConfigPath", config.hostBrowserConfigPath,
     "-Mode", "Run",
   ], {
-    detached: true,
+    detached: false,
     windowsHide: true,
     stdio: ["ignore", descriptor, descriptor],
   });
@@ -447,6 +447,7 @@ async function portStaysClosed(port, milliseconds) {
 }
 
 function startService() {
+  if (config.launchUrlPath) rmSync(config.launchUrlPath, { force: true });
   serviceStartedAt = Date.now();
   appendFileSync(config.logPath, \`\\n[\${new Date().toISOString()}] 启动服务：\${config.serviceCommand}\\n\`);
   const descriptor = openSync(config.logPath, "a", 0o600);
@@ -455,7 +456,7 @@ function startService() {
     writeLog(\`直接执行服务入口：\${config.directService.executable}\`);
     child = spawn(config.directService.executable, config.directService.arguments, {
       cwd: config.workingDirectory,
-      detached: true,
+      detached: process.platform !== "win32",
       windowsHide: true,
       stdio: ["ignore", descriptor, descriptor],
       env: {
@@ -469,7 +470,7 @@ function startService() {
   } else if (config.platform === "win32") {
     child = spawn(powerShellExecutable(), ["-NoLogo", "-WindowStyle", "Hidden", "-Command", config.serviceCommand], {
       cwd: config.workingDirectory,
-      detached: true,
+      detached: false,
       windowsHide: true,
       stdio: ["ignore", descriptor, descriptor],
     });
@@ -512,7 +513,9 @@ async function waitForService() {
 
 async function serviceIsReady() {
   try {
-    const response = await fetch(config.url, {
+    const readinessUrl = config.directService?.serviceKind === "loading-proxy"
+      ? new URL("/__omd_ready", config.url).href : config.url;
+    const response = await fetch(readinessUrl, {
       headers: { "cache-control": "no-cache" },
       signal: AbortSignal.timeout(1000),
     });

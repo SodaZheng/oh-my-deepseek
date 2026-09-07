@@ -294,7 +294,7 @@ test("WSL templates keep service ownership in Linux and browser ownership in Win
   assert.doesNotMatch(browserHost, /Size = 16/);
   assert.match(browserHost, /PostMessage\(hwnd, 0x0010/);
   assert.match(browserHost, /taskkill\.exe/);
-  assert.match(browserHost, /\('--app=' \+ \[string\]\$Config\.url\)/);
+  assert.match(browserHost, /\('--app="' \+ \$script:LaunchUrl \+ '"'\)/);
   assert.doesNotMatch(browserHost, /--window-position=/);
   assert.doesNotMatch(browserHost, /--window-size=/);
   assert.match(browserHost, /function Run-BrowserLifecycle \{[\s\S]*Wait-ForHostService \$ServiceDeadline[\s\S]*Start-HostChrome/);

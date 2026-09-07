@@ -8,7 +8,7 @@ export function renderMacOnDemandHttpProxy() {
   const loadingDocument = JSON.stringify(renderMacLoadingDocument());
   const overlayHead = JSON.stringify(renderMacLoadingOverlayHead());
   const overlayBody = JSON.stringify(renderMacLoadingOverlayBody());
-  return `import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+  return `import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
@@ -28,13 +28,17 @@ let serviceSpawnError = null;
 let shuttingDown = false;
 let backendPort = null;
 let backendReady = false;
+let serviceToken = null;
+let readinessCookie = "";
 let browserLoadingServed = false;
 let handoffComplete = false;
+let windowRevealedAt = null;
 let startupFailure = null;
 
 mkdirSync(path.dirname(config.logPath), { recursive: true });
 rmSync(config.readyPath, { force: true });
 rmSync(config.errorPath, { force: true });
+if (config.launchUrlPath) rmSync(config.launchUrlPath, { force: true });
 
 process.on("SIGINT", () => void shutdown(130));
 process.on("SIGTERM", () => void shutdown(143));
@@ -62,6 +66,11 @@ async function main() {
     const remainingLoadingTime = minimumLoadingMilliseconds - (Date.now() - loadingStartedAt);
     if (remainingLoadingTime > 0) await delay(remainingLoadingTime);
     backendReady = true;
+    if (config.launchUrlPath) {
+      const launchUrl = new URL(config.url);
+      if (serviceToken) launchUrl.searchParams.set("token", serviceToken);
+      writeFileSync(config.launchUrlPath, launchUrl.href, { mode: 0o600 });
+    }
     writeFileSync(config.readyPath, String(Date.now()), { mode: 0o600 });
     writeLog(\`按需服务完整就绪，内部端口 \${backendPort}\`);
   } catch (error) {
@@ -71,6 +80,19 @@ async function main() {
 
 function handleRequest(request, response) {
   const requestUrl = new URL(request.url || "/", publicUrl);
+  if (requestUrl.pathname === "/__omd_window_visible" && request.method === "POST") {
+    windowRevealedAt ||= Date.now();
+    response.writeHead(204, { "cache-control": "no-store" });
+    response.end();
+    return;
+  }
+  if (requestUrl.pathname === "/__omd_browser_ready") {
+    const visible = !config.waitForWindowReveal || (windowRevealedAt !== null
+      && Date.now() - windowRevealedAt >= (Number(config.minimumLoadingMilliseconds) || 900));
+    response.writeHead(backendReady && visible ? 204 : 503, { "cache-control": "no-store" });
+    response.end();
+    return;
+  }
   if (requestUrl.pathname === "/__omd_loading_icon") {
     response.writeHead(200, {
       "content-type": "image/png",
@@ -104,6 +126,12 @@ function handleRequest(request, response) {
     && requestUrl.pathname === publicUrl.pathname
     && String(request.headers.accept || "").includes("text/html");
   const launchHandoff = requestUrl.searchParams.get("__omd_launch") === "1";
+  // Let DSH exchange its own login token for its authority-bound session cookie.
+  // Never attach the internal readiness cookie to unauthenticated browser requests.
+  if (request.method === "GET" && requestUrl.pathname === "/" && requestUrl.searchParams.has("token") && backendPort) {
+    proxyHttp(request, response, request.url, false);
+    return;
+  }
   const isChromeDocument = isDocument && /Chrome\\\//i.test(String(request.headers["user-agent"] || ""));
   const shouldServeBrowserLoading = isChromeDocument && !launchHandoff && !browserLoadingServed;
   if (shouldServeBrowserLoading) browserLoadingServed = true;
@@ -123,18 +151,24 @@ function handleRequest(request, response) {
     return;
   }
 
-  requestUrl.searchParams.delete("__omd_launch");
-  proxyHttp(request, response, requestUrl, isDocument && launchHandoff);
+  let upstreamPath = request.url;
+  if (isDocument && launchHandoff) {
+    requestUrl.searchParams.delete("__omd_launch");
+    upstreamPath = requestUrl.pathname + requestUrl.search;
+  }
+  // DSH combo assets use /plugins/??package/client.js&rev=...; even deleting
+  // an absent URLSearchParams key reserializes and breaks that wire format.
+  proxyHttp(request, response, upstreamPath, isDocument && launchHandoff);
 }
 
-function proxyHttp(request, response, requestUrl, injectOverlay) {
+function proxyHttp(request, response, upstreamPath, injectOverlay) {
   const headers = { ...request.headers, host: publicUrl.host };
   if (injectOverlay) headers["accept-encoding"] = "identity";
   const upstream = http.request({
     host: "127.0.0.1",
     port: backendPort,
     method: request.method,
-    path: requestUrl.pathname + requestUrl.search,
+    path: upstreamPath,
     headers,
   }, (upstreamResponse) => {
     const contentType = String(upstreamResponse.headers["content-type"] || "");
@@ -214,20 +248,54 @@ function startService(port) {
   const direct = config.directService;
   const launch = buildDshLaunch(direct, port);
   appendFileSync(config.logPath, \`\\n[\${new Date().toISOString()}] 按需启动服务：\${config.serviceCommand}（内部端口 \${port}）\\n\`);
-  const descriptor = openSync(config.logPath, "a", 0o600);
   const child = spawn(launch.executable, launch.arguments, {
     cwd: config.workingDirectory,
-    detached: true,
-    stdio: ["ignore", descriptor, descriptor],
+    // Windows PowerShell can exit silently without running -File when detached
+    // from a console. taskkill /t handles the Windows service tree on cleanup.
+    detached: process.platform !== "win32",
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
       ...(direct.path ? { PATH: direct.path } : {}),
       ...(direct.nodeCompileCachePath ? { NODE_COMPILE_CACHE: direct.nodeCompileCachePath } : {}),
     },
   });
-  closeSync(descriptor);
+  captureServiceOutput(child.stdout, port, true);
+  captureServiceOutput(child.stderr, port, false);
   child.once("error", (error) => { serviceSpawnError = error; });
+  child.once("exit", (code, signal) => {
+    if (shuttingDown || backendReady) return;
+    const status = code === null ? \`信号 \${signal}\` : \`退出码 \${code}（0x\${(code >>> 0).toString(16).padStart(8, "0")}）\`;
+    serviceSpawnError ||= new Error(\`服务在完整就绪前退出：\${status}；入口：\${launch.executable}\`);
+  });
   return child;
+}
+
+function captureServiceOutput(stream, port, readAnnouncement) {
+  let pending = "";
+  stream.setEncoding("utf8");
+  const consume = (line) => {
+    if (readAnnouncement && line.startsWith("dsh web: ")) {
+      try {
+        const announced = new URL(line.slice(9).split(/\\s/)[0]);
+        if (announced.protocol === "http:" && announced.hostname === "127.0.0.1"
+          && Number(announced.port) === port && announced.pathname === "/") {
+          serviceToken = announced.searchParams.get("token") || null;
+        }
+      } catch {}
+    }
+    appendFileSync(config.logPath, line.replace(/([?&]token=)[^\\s)]+/g, "$1[redacted]"));
+  };
+  stream.on("data", (chunk) => {
+    pending += chunk;
+    let end;
+    while ((end = pending.indexOf("\\n")) >= 0) {
+      consume(pending.slice(0, end + 1));
+      pending = pending.slice(end + 1);
+    }
+  });
+  stream.on("end", () => { if (pending) consume(pending); });
 }
 
 function buildDshLaunch(direct, port) {
@@ -285,19 +353,39 @@ async function waitForService(port) {
 
 async function serviceIsReady(port) {
   try {
-    const response = await fetch(\`http://127.0.0.1:\${port}/\`, {
-      headers: { "cache-control": "no-cache", host: publicUrl.host },
-      signal: AbortSignal.timeout(1000),
-    });
-    if (!response.ok) return false;
-    const contentType = response.headers.get("content-type") || "";
+    if (serviceToken && !readinessCookie) {
+      const login = await readBackendPage(port, "/?token=" + encodeURIComponent(serviceToken));
+      if (login.status === 303 && login.headers.location === "/") {
+        readinessCookie = (login.headers["set-cookie"] || []).map((cookie) => cookie.split(";", 1)[0]).join("; ");
+      }
+    }
+    const response = await readBackendPage(port, "/", readinessCookie);
+    if (response.status < 200 || response.status >= 300) return false;
+    const contentType = response.headers["content-type"] || "";
     if (!contentType.includes("text/html")) return true;
-    const html = await response.text();
+    const html = response.body;
     if (!html.includes("<title>DeepSeek Harness</title>")) return true;
     return dshBootManifestIsComplete(html);
   } catch {
     return false;
   }
+}
+
+function readBackendPage(port, requestPath, cookie = "") {
+  return new Promise((resolve, reject) => {
+    const request = http.get({
+      host: "127.0.0.1", port, path: requestPath,
+      headers: { host: publicUrl.host, "cache-control": "no-cache", ...(cookie ? { cookie } : {}) },
+    }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("error", reject);
+      response.on("end", () => resolve({ status: response.statusCode, headers: response.headers, body }));
+    });
+    request.on("error", reject);
+    request.setTimeout(1000, () => request.destroy(new Error("DSH readiness request timed out")));
+  });
 }
 
 function dshBootManifestIsComplete(html) {
@@ -349,6 +437,7 @@ async function shutdown(exitCode) {
   if (shuttingDown) return;
   shuttingDown = true;
   rmSync(config.readyPath, { force: true });
+  if (config.launchUrlPath) rmSync(config.launchUrlPath, { force: true });
   for (const socket of sockets) socket.destroy();
   if (proxy.listening) await new Promise((resolve) => proxy.close(() => resolve()));
   if (serviceChild?.pid && serviceChild.exitCode === null) {

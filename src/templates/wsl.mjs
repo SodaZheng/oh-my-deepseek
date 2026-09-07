@@ -17,6 +17,7 @@ $HttpClient.Timeout = [TimeSpan]::FromSeconds(2)
 $HttpClient.DefaultRequestHeaders.CacheControl = [System.Net.Http.Headers.CacheControlHeaderValue]::new()
 $HttpClient.DefaultRequestHeaders.CacheControl.NoCache = $true
 $script:BrowserProcess = $null
+$script:LaunchUrl = [string]$Config.url
 
 Add-Type -TypeDefinition @'
 using System;
@@ -735,7 +736,15 @@ function Test-HttpService {
 function Test-LaunchSurface {
   $Response = $null
   try {
-    $Response = $HttpClient.GetAsync([string]$Config.url).GetAwaiter().GetResult()
+    if ($Config.launchUrlPath) {
+      if (-not (Test-Path -LiteralPath $Config.launchUrlPath -PathType Leaf)) { return $false }
+      $Candidate = (Get-Content -LiteralPath $Config.launchUrlPath -Raw -Encoding UTF8).Trim()
+      $Base = [uri]$Config.url
+      $Launch = [uri]$Candidate
+      if ($Launch.Scheme -ne $Base.Scheme -or $Launch.Authority -ne $Base.Authority -or $Launch.AbsolutePath -ne $Base.AbsolutePath) { return $false }
+      $script:LaunchUrl = $Candidate
+    }
+    $Response = $HttpClient.GetAsync($script:LaunchUrl).GetAwaiter().GetResult()
     if (-not $Response.IsSuccessStatusCode) { return $false }
     $ContentType = [string]$Response.Content.Headers.ContentType
     if (-not $ContentType.Contains('text/html')) { return $true }
@@ -833,7 +842,7 @@ function Start-HostChrome {
   New-Item -ItemType Directory -Path $Config.chromeProfilePath -Force | Out-Null
   Remove-Item -LiteralPath $DevToolsPortFile -Force -ErrorAction SilentlyContinue
   $Arguments = @(
-    ('--app=' + [string]$Config.url),
+    ('--app="' + $script:LaunchUrl + '"'),
     ('--user-data-dir="' + [string]$Config.chromeProfilePath + '"'),
     '--remote-debugging-port=0',
     '--no-first-run',
@@ -899,6 +908,11 @@ function Run-BrowserLifecycle {
   }
   [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$WindowHandle, [System.Text.Encoding]::ASCII)
   Invoke-DevTools ('/json/activate/' + [string]$Target.id) | Out-Null
+  if ($Config.loadingMode) {
+    $VisibleUrl = [Uri]::new([Uri]([string]$Config.url), '/__omd_window_visible').AbsoluteUri
+    $VisibleResponse = $HttpClient.PostAsync($VisibleUrl, $null).GetAwaiter().GetResult()
+    $VisibleResponse.Dispose()
+  }
   if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) $WindowHandle }
   while ($true) {
     Save-WindowSize $WindowHandle
