@@ -704,6 +704,9 @@ function Start-PwaWindow([datetime]$Deadline) {
   $WindowWasGated = $false
   $Handle = 0
   $LaunchArguments = @($Config.pwaArguments) + @(Get-StartupWindowArguments)
+  if ($Config.launchUrlPath) {
+    $LaunchArguments += ('--app-launch-url-for-shortcuts-menu-item=' + $script:LaunchUrl)
+  }
   $QuotedArguments = @($LaunchArguments | ForEach-Object {
     $Value = [string]$_
     if ($Value -match '[\s"]') { '"' + $Value.Replace('"', '\"') + '"' } else { $Value }

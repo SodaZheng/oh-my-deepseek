@@ -89,7 +89,7 @@ async function main() {
   }
 }
 
-function handleRequest(request, response) {
+async function handleRequest(request, response) {
   const requestUrl = new URL(request.url || "/", publicUrl);
   if (requestUrl.pathname === "/__omd_first_frame") {
     if (request.method === "POST") firstFrameReady = true;
@@ -119,6 +119,22 @@ function handleRequest(request, response) {
     const visible = !config.waitForWindowReveal || (windowRevealedAt !== null
       && Date.now() - windowRevealedAt >= (Number(config.minimumLoadingMilliseconds) || 900));
     const headers = { "cache-control": "no-store" };
+    if (backendReady && serviceToken && !earlyLaunchNonce) {
+      // A fixed-start-URL PWA must wait for the native token handoff, or use
+      // an existing DSH cookie. Readiness alone does not authorize a browser.
+      try {
+        const page = await readBackendPage(backendPort, "/", String(request.headers.cookie || ""));
+        if (page.status < 200 || page.status >= 300) {
+          response.writeHead(401, headers);
+          response.end();
+          return;
+        }
+      } catch {
+        response.writeHead(503, headers);
+        response.end();
+        return;
+      }
+    }
     if (backendReady && earlyLaunchNonce && serviceToken) {
       const authorizedLaunch = String(request.headers.cookie || "").split(";").some((part) => part.trim() === earlyCookieName + "=" + earlyLaunchNonce);
       if (!authorizedLaunch) {
@@ -168,6 +184,25 @@ function handleRequest(request, response) {
   // Let DSH exchange its own login token for its authority-bound session cookie.
   // Never attach the internal readiness cookie to unauthenticated browser requests.
   if (request.method === "GET" && requestUrl.pathname === "/" && requestUrl.searchParams.has("token") && backendPort) {
+    if (requestUrl.searchParams.get("__omd_auth_window") === "1") {
+      try {
+        const login = await readBackendPage(backendPort, "/?token=" + encodeURIComponent(requestUrl.searchParams.get("token")));
+        if (login.status === 303 && login.headers.location === "/" && login.headers["set-cookie"]?.length) {
+          response.writeHead(200, {
+            "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+            "referrer-policy": "no-referrer", "set-cookie": login.headers["set-cookie"],
+          });
+          response.end('<!doctype html><title>DSH Login</title><style>html{background:#151517}</style><script>window.close();</script>');
+          return;
+        }
+        response.writeHead(401, { "cache-control": "no-store" });
+        response.end("DSH authentication failed");
+      } catch {
+        response.writeHead(503, { "cache-control": "no-store" });
+        response.end("DSH authentication unavailable");
+      }
+      return;
+    }
     proxyHttp(request, response, request.url, false);
     return;
   }

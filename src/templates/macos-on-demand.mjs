@@ -63,12 +63,14 @@ int main(int argc, const char *argv[]) {
     NSString *proxyPath = config[@"proxyPath"];
     NSString *readyPath = config[@"readyPath"];
     NSString *errorPath = config[@"errorPath"];
+    NSString *launchUrlPath = config[@"launchUrlPath"];
     NSString *name = config[@"name"] ?: @"DeepSeek Harness";
     NSTimeInterval timeout = [config[@"timeoutSeconds"] doubleValue];
     if (timeout < 1) timeout = 45;
 
     [[NSFileManager defaultManager] removeItemAtPath:readyPath error:nil];
     [[NSFileManager defaultManager] removeItemAtPath:errorPath error:nil];
+    if (launchUrlPath) [[NSFileManager defaultManager] removeItemAtPath:launchUrlPath error:nil];
 
     int *sockets = NULL;
     size_t socketCount = 0;
@@ -131,6 +133,34 @@ int main(int argc, const char *argv[]) {
       }
 
       if (!revealed && [[NSFileManager defaultManager] fileExistsAtPath:readyPath]) {
+        // The installed Shim starts at its fixed URL. Deliver the per-process
+        // login URL through Chrome's app URL override. Shim openURLs is a
+        // protocol-handler event and does not navigate an ordinary HTTP PWA.
+        NSString *launchText = launchUrlPath ? [NSString stringWithContentsOfFile:launchUrlPath encoding:NSUTF8StringEncoding error:nil] : nil;
+        NSURLComponents *launch = launchText ? [NSURLComponents componentsWithString:launchText] : nil;
+        NSURLComponents *base = [NSURLComponents componentsWithString:config[@"url"]];
+        BOOL hasToken = NO;
+        for (NSURLQueryItem *item in launch.queryItems) if ([item.name isEqualToString:@"token"] && item.value.length) hasToken = YES;
+        if (hasToken && [launch.scheme isEqualToString:base.scheme] && [launch.host isEqualToString:base.host]
+          && [launch.port isEqual:base.port] && [launch.path isEqualToString:base.path]) {
+          NSTask *handoff = [[NSTask alloc] init];
+          handoff.executableURL = [NSURL fileURLWithPath:config[@"chromePath"]];
+          NSMutableArray *query = [launch.queryItems mutableCopy];
+          [query addObject:[NSURLQueryItem queryItemWithName:@"__omd_auth_window" value:@"1"]];
+          launch.queryItems = query;
+          handoff.arguments = @[
+            [@"--app-id=" stringByAppendingString:config[@"chromeAppId"]],
+            [@"--app-launch-url-for-shortcuts-menu-item=" stringByAppendingString:launch.string]
+          ];
+          handoff.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+          handoff.standardError = [NSFileHandle fileHandleWithNullDevice];
+          NSError *handoffError = nil;
+          if (![handoff launchAndReturnError:&handoffError]) {
+            failed = YES;
+            failureMessage = @"无法把认证地址交给 Chrome，请查看 Chrome 安装路径。";
+            break;
+          }
+        }
         fprintf(stderr, "[on-demand-native] stable readiness reached in the existing App window\n");
         revealed = YES;
       } else if (!revealed && [[NSFileManager defaultManager] fileExistsAtPath:errorPath]) {
@@ -139,6 +169,7 @@ int main(int argc, const char *argv[]) {
         break;
       }
       usleep(50000);
+      [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.001]];
     }
 
     if (!revealed && !failed && LiveApplications(bundleIdentifier).count > 0) {

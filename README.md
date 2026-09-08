@@ -128,6 +128,8 @@ oh-my-deepseek create `
 
 再次运行 `omd` 或相同的 `create` 命令时，会先销毁、删除本工具生成的旧快捷方式和启动文件，再创建全新的入口；Chrome Profile、登录 Cookie 和已保存的窗口尺寸会保留。如果同名位置是其他 App 或文件，默认会停止并提示；只有显式加入 `--force` 才会覆盖。若旧 App 仍在运行，命令会要求先关闭，避免运行过程中删除其启动文件。
 
+新版 DSH 的 `?token=…` 地址由启动器在每次启动时自动读取，无需把 token 填进 `--url`。macOS 官方 Chrome App 和 WSL 已安装 PWA 也会收到本次启动的认证地址；Windows / WSL 独立窗口使用启动凭证交接。认证仍由 DSH 自己完成，旧版无 token 服务继续可用。升级本工具后，关闭旧 App，再用原来的 `create` 命令重新生成入口，使已生成的启动脚本生效。
+
 ## 启动行为
 
 1. 请求配置的 URL，确认页面已返回；DeepSeek Harness 还会等待完整的插件启动清单。

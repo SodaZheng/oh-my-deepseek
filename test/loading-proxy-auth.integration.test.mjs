@@ -99,10 +99,14 @@ server.listen(port,'127.0.0.1',()=>{
     assert.equal(login.status,204);
     assert.equal((await fetch(origin+'/api/test',{headers:{cookie:bootstrapCookie}})).status,401);
   }else{
+    const waiting=await fetch(origin+'/__omd_browser_ready');
+    assert.equal(waiting.status,401);
+    assert.equal(waiting.headers.get('set-cookie'),null);
     login=await fetch(launchUrl,{redirect:'manual'});
     assert.equal(login.status,303);
   }
   const cookie=login.headers.get('set-cookie').split(';',1)[0];
+  if(!earlyLoading) assert.equal((await fetch(origin+'/__omd_browser_ready',{headers:{cookie}})).status,204);
   const document=await fetch(origin+'/?__omd_launch=1',{headers:{cookie,accept:'text/html'}});
   assert.equal(document.status,200);
   assert.match(await document.text(),/__DSH_BOOT__/);

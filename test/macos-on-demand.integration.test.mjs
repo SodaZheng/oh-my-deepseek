@@ -85,15 +85,20 @@ test("launchd socket activation has no idle process and starts the macOS launche
 
   await writeFile(activatorSource, renderMacOnDemandActivatorSource());
   await writeFile(proxyPath, renderMacOnDemandProxy());
-  await writeFakeDsh(servicePath, stoppedPath, 400);
+  await writeFakeDsh(servicePath, stoppedPath, 400, "native-test-token");
   await writeFile(configPath, JSON.stringify({
     ...proxyConfig({ root, servicePath, readyPath, errorPath, stoppedPath, logPath, url: `http://127.0.0.1:${port}/` }),
-    timeoutSeconds: 2,
+    launchUrlPath: path.join(root, "launch-url.txt"),
+    appPath: appBundle,
+    chromePath: path.join(root, "fake-chrome"),
+    chromeAppId: "fixture-app-id",
+    timeoutSeconds: 4,
     appBundleIdentifier: bundleIdentifier,
     nodePath: process.execPath,
     proxyPath,
   }));
 
+  await writeFile(path.join(root, "fake-chrome"), `#!/bin/sh\nfor arg in "$@"; do\ncase "$arg" in --app-launch-url-for-shortcuts-menu-item=*) printf "%s" "\${arg#*=}" > "${path.join(root, "received-url")}";; esac\ndone\n`, { mode: 0o755 });
   const clang = spawnSync("/usr/bin/xcrun", ["--find", "clang"], { encoding: "utf8" }).stdout.trim();
   const sdk = spawnSync("/usr/bin/xcrun", ["--show-sdk-path"], { encoding: "utf8" }).stdout.trim();
   const compiled = spawnSync(clang, ["-isysroot", sdk, "-mmacosx-version-min=13.0", "-fobjc-arc", "-framework", "AppKit", "-framework", "Foundation", "-o", activatorPath, activatorSource], { encoding: "utf8" });
@@ -156,7 +161,15 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     assert.equal(await pathExists(hiddenPath), false, "on-demand launcher hid the whole App and destabilized its Dock identity");
     assert.equal(await pathExists(unhiddenPath), false, "on-demand launcher toggled App visibility before readiness");
     await waitForReady(publicUrl, 10_000);
-    const html = await fetch(`${publicUrl}?__omd_launch=1`, { headers: { accept: "text/html" } }).then((value) => value.text());
+    await waitForPath(path.join(root, "received-url"), 5000);
+    const receivedUrl = await readFile(path.join(root, "received-url"), "utf8");
+    assert.equal(new URL(receivedUrl).searchParams.get("token"), "native-test-token");
+    assert.equal(new URL(receivedUrl).origin, new URL(publicUrl).origin);
+    const login = await fetch(receivedUrl, { redirect: "manual" });
+    assert.equal(login.status, 200);
+    assert.match(await login.text(), /window\.close/);
+    const cookie = login.headers.get("set-cookie").split(";", 1)[0];
+    const html = await fetch(`${publicUrl}?__omd_launch=1`, { headers: { cookie, accept: "text/html" } }).then((value) => value.text());
     assert.match(html, /__DSH_BOOT__/);
     assert.match(html, /id="omd-launch"/);
     await waitForPath(readyPath, 3000);
@@ -166,7 +179,7 @@ int main(int argc, const char *argv[]) { @autoreleasepool {
     assert.equal(await pathExists(errorPath), false, await readText(errorPath));
     await delay(2500);
     assert.equal(readLaunchState(domain, label), "running", "ready App was stopped by the startup timeout");
-    assert.match(await fetch(`${publicUrl}?__omd_launch=1`, { headers: { accept: "text/html" } }).then((value) => value.text()), /__DSH_BOOT__/);
+    assert.match(await fetch(`${publicUrl}?__omd_launch=1`, { headers: { cookie, accept: "text/html" } }).then((value) => value.text()), /__DSH_BOOT__/);
 
     spawnSync("/usr/bin/pkill", ["-TERM", "-f", `^${appExecutable}`], { stdio: "ignore" });
     await waitFor(() => !processMatching(activatorPath), 7000);
@@ -208,16 +221,21 @@ function proxyConfig({ root, servicePath, readyPath, errorPath, logPath, url }) 
   };
 }
 
-async function writeFakeDsh(servicePath, stoppedPath, startupDelay = 0) {
+async function writeFakeDsh(servicePath, stoppedPath, startupDelay = 0, token = null) {
   await writeFile(servicePath, `import { writeFileSync } from "node:fs";
 import http from "node:http";
 const portIndex = process.argv.indexOf("--port");
 const port = Number(process.argv[portIndex + 1]);
+const token = ${JSON.stringify(token)};
 const server = http.createServer((request, response) => {
+  if (token && new URL(request.url, "http://localhost").searchParams.get("token") === token) {
+    response.writeHead(303, { location: "/", "set-cookie": "dsh_session=native-test; Path=/; HttpOnly; SameSite=Strict" }); response.end(); return;
+  }
+  if (token && request.headers.cookie !== "dsh_session=native-test") { response.writeHead(401); response.end(); return; }
   response.setHeader("content-type", "text/html");
   response.end('<!doctype html><title>DeepSeek Harness</title><script>globalThis["__DSH_BOOT__"]={"entries":[{"id":"ready","url":"/plugins/ready/client.js"}]}</script>');
 });
-setTimeout(() => server.listen(port, "127.0.0.1"), ${startupDelay});
+setTimeout(() => server.listen(port, "127.0.0.1", () => { if (token) console.log("dsh web: http://127.0.0.1:" + port + "/?token=" + token); }), ${startupDelay});
 process.on("SIGTERM", () => server.close(() => { writeFileSync(${JSON.stringify(stoppedPath)}, "stopped"); process.exit(0); }));
 `);
 }

@@ -175,7 +175,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       hostBrowserErrorPath: hostBrowserErrorPathWsl,
       lockPath,
       logPath,
-      launchUrlPath: usesLoadingScreen && !installedWebApp ? path.join(hostStateDirectoryWsl, "launch-url.txt") : null,
+      launchUrlPath: usesLoadingScreen ? path.join(hostStateDirectoryWsl, "launch-url.txt") : null,
     };
     const browserConfig = {
       generatedBy: GENERATED_BY,
@@ -190,7 +190,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       launchMode: installedWebApp ? "installed-pwa" : "url-app",
       loadingMode: usesLoadingScreen,
       requireFirstFrame: usesLoadingScreen && !installedWebApp,
-      launchUrlPath: usesLoadingScreen && !installedWebApp ? path.win32.join(hostStateDirectory, "launch-url.txt") : null,
+      launchUrlPath: usesLoadingScreen ? path.win32.join(hostStateDirectory, "launch-url.txt") : null,
       pwaLauncherPath: installedWebApp?.launcherPath ?? null,
       pwaArguments: installedWebApp?.arguments ?? [],
       appUserModelId,
@@ -217,7 +217,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       minimumLoadingMilliseconds: 900,
       earlyLoading: !installedWebApp,
       waitForWindowReveal: !installedWebApp,
-      launchUrlPath: !installedWebApp ? path.join(hostStateDirectoryWsl, "launch-url.txt") : null,
+      launchUrlPath: path.join(hostStateDirectoryWsl, "launch-url.txt"),
       readyPath: path.join(stateDirectory, "loading.ready"),
       errorPath: path.join(stateDirectory, "loading-error.txt"),
       loadingIconPath,
