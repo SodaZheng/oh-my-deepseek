@@ -42,6 +42,10 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     ? { ...resolvedDirectService, nodeCompileCachePath: path.join(stateDirectory, "node-compile-cache") }
     : null;
   const usesLoadingScreen = directService?.serviceKind === "dsh-web";
+  const serviceWords = parseSimpleServiceCommand(config.serviceCommand);
+  if (serviceWords && path.basename(serviceWords[0]) === "dsh" && serviceWords[1] === "web" && !usesLoadingScreen) {
+    throw new Error("无法为 dsh web 生成 token 认证代理；请确认 WSL 登录 shell 能找到 dsh，再重新运行 create");
+  }
   const installedWebApp = await findInstalledWindowsWebApp({ config, chrome, windowsEnvironment, interop });
   const officialPwaIdentity = installedWebApp
     ? interop.findPwaShortcutIdentity({ installedWebApp, windowsEnvironment })
@@ -100,7 +104,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
     taskbarIdentityMatched: true,
     usesOfficialPwaEntry,
     compileCachePrepared: false,
-    serviceLaunchMode: directService ? "direct" : "login-shell",
+    serviceLaunchMode: directService && directService.dshWebLaunch?.kind !== "posix-shell-command" ? "direct" : "login-shell",
     wslDistro: config.wslDistro,
     url: config.url,
     serviceCommand: config.serviceCommand,
@@ -175,6 +179,7 @@ export async function createWslLauncher(config, chrome, interop = defaultInterop
       hostBrowserErrorPath: hostBrowserErrorPathWsl,
       lockPath,
       logPath,
+      serviceErrorPath: usesLoadingScreen ? path.join(stateDirectory, "loading-error.txt") : null,
       launchUrlPath: usesLoadingScreen ? path.join(hostStateDirectoryWsl, "launch-url.txt") : null,
     };
     const browserConfig = {

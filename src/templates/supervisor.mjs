@@ -14,6 +14,7 @@ let ownsLock = false;
 let shuttingDown = false;
 let serviceSpawnError = null;
 let serviceStartedAt = null;
+let lastReadinessIssue = "";
 let windowStateChild = null;
 
 mkdirSync(path.dirname(config.logPath), { recursive: true });
@@ -56,7 +57,7 @@ async function main() {
   if (config.platform === "win32") {
     const serviceReady = await serviceReadyPromise;
     if (!serviceReady) {
-      const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
+      const reason = serviceFailureReason();
       throw new Error(reason);
     }
     if (ownsService) logOwnedServiceReady();
@@ -75,7 +76,7 @@ async function main() {
   chromeChild = startChrome(false);
   const [serviceReady] = await Promise.all([serviceReadyPromise, waitForChromeDevTools()]);
   if (!serviceReady) {
-    const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
+    const reason = serviceFailureReason();
     throw new Error(reason);
   }
   if (ownsService) logOwnedServiceReady();
@@ -161,14 +162,24 @@ async function runWindowsHostBrowser() {
     serviceReadyPromise = waitForService();
   }
 
+  if (config.hostBrowserErrorPath) rmSync(config.hostBrowserErrorPath, { force: true });
   chromeChild = startWindowsBrowserBridge();
   const browserExitPromise = waitForChildExit(chromeChild).then(
     (code) => ({ code, error: null }),
     (error) => ({ code: 1, error }),
   );
-  if (!(await serviceReadyPromise)) {
+  const startup = await Promise.race([
+    serviceReadyPromise.then((ready) => ({ ready })),
+    browserExitPromise.then((browser) => ({ browser })),
+  ]);
+  if (startup.browser) {
+    throw new Error((ownsService && readStartupError(config.serviceErrorPath))
+      || readStartupError(config.hostBrowserErrorPath) || startup.browser.error?.message
+      || \`Windows Chrome 桥接器在服务就绪前退出，状态码 \${startup.browser.code}\`);
+  }
+  if (!startup.ready) {
     stopWindowsBrowserBridge();
-    const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
+    const reason = serviceFailureReason();
     throw new Error(reason);
   }
   if (ownsService) logOwnedServiceReady();
@@ -228,7 +239,7 @@ async function runChromeAppShim() {
     writeLog("检测到已有服务；App 退出时仍会强制清理对应端口");
   }
   if (!(await waitForService())) {
-    const reason = serviceSpawnError?.message || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}\`;
+    const reason = serviceFailureReason();
     throw new Error(reason);
   }
   if (ownsService) logOwnedServiceReady();
@@ -446,6 +457,7 @@ async function portStaysClosed(port, milliseconds) {
 
 function startService() {
   if (config.launchUrlPath) rmSync(config.launchUrlPath, { force: true });
+  if (config.serviceErrorPath) rmSync(config.serviceErrorPath, { force: true });
   serviceStartedAt = Date.now();
   appendFileSync(config.logPath, \`\\n[\${new Date().toISOString()}] 启动服务：\${config.serviceCommand}\\n\`);
   const descriptor = openSync(config.logPath, "a", 0o600);
@@ -485,7 +497,22 @@ function startService() {
     serviceSpawnError = error;
     writeLog(\`服务进程错误：\${error.message}\`);
   });
+  child.once("exit", (code, signal) => {
+    if (shuttingDown) return;
+    serviceSpawnError ||= new Error(readStartupError(config.serviceErrorPath)
+      || \`服务进程已退出：\${signal ? "信号 " + signal : "退出码 " + code}；请查看前面的服务日志\`);
+  });
   return child;
+}
+
+function readStartupError(errorPath) {
+  if (!errorPath) return "";
+  try { return readFileSync(errorPath, "utf8").trim().replace(/([?&]token=)[^\\s)]+/g, "$1[redacted]"); } catch { return ""; }
+}
+
+function serviceFailureReason() {
+  return (ownsService && readStartupError(config.serviceErrorPath)) || serviceSpawnError?.message
+    || \`服务未能在 \${config.timeoutSeconds} 秒内提供可用页面：\${config.url}；最后检测：\${lastReadinessIssue || "未收到响应"}\`;
 }
 
 function logOwnedServiceReady() {
@@ -496,7 +523,8 @@ function logOwnedServiceReady() {
 async function waitForService() {
   const deadline = Date.now() + config.timeoutSeconds * 1000;
   let consecutiveSuccesses = 0;
-  while (Date.now() < deadline) {
+  while (!shuttingDown && Date.now() < deadline) {
+    if (ownsService && readStartupError(config.serviceErrorPath)) return false;
     if (await serviceIsReady()) {
       consecutiveSuccesses += 1;
       if (consecutiveSuccesses >= 2) return true;
@@ -517,13 +545,19 @@ async function serviceIsReady() {
       headers: { "cache-control": "no-cache" },
       signal: AbortSignal.timeout(1000),
     });
-    if (!response.ok) return false;
+    if (!response.ok) {
+      lastReadinessIssue = \`HTTP \${response.status}\${response.status === 401 ? "（需要认证，检查启动入口的 token 交接）" : ""}\`;
+      return false;
+    }
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("text/html")) return true;
     const html = await response.text();
     if (!html.includes("<title>DeepSeek Harness</title>")) return true;
-    return dshBootManifestIsComplete(html);
-  } catch {
+    const complete = dshBootManifestIsComplete(html);
+    if (!complete) lastReadinessIssue = "HTML 已返回，但 DSH 启动清单尚未完整加载";
+    return complete;
+  } catch (error) {
+    lastReadinessIssue = error.cause?.code || error.code || error.name || "连接失败";
     return false;
   }
 }

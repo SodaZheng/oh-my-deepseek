@@ -7,9 +7,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {renderMacOnDemandProxy} from '../src/templates/macos-on-demand.mjs';
+import {resolveDirectPosixService} from '../src/service-command.mjs';
+import {shellQuote} from '../src/utils.mjs';
 
-for (const earlyLoading of [false, true]) test(`loading proxy keeps authentication with early loading ${earlyLoading}`, {timeout:15000}, async t => {
-  const root=await mkdtemp(path.join(os.tmpdir(),'omd-auth-test-'));
+for (const [earlyLoading, launchKind] of [[false,'direct'],[true,'direct'],[false,'function'],[true,'alias']]) test(`loading proxy authenticates ${launchKind} with early loading ${earlyLoading}`, {timeout:15000,skip:process.platform==='win32' && launchKind!=='direct'}, async t => {
+  const root=await mkdtemp(path.join(os.tmpdir(),"omd-auth-test's "));
   const proxyPath=path.join(root,'proxy.mjs');
   const configPath=path.join(root,'config.json');
   const servicePath=path.join(root,'service.mjs');
@@ -49,10 +51,21 @@ server.listen(port,'127.0.0.1',()=>{
 });
 }start();
 `);
+  let directService={executable:process.execPath,arguments:[servicePath],serviceKind:'dsh-web'};
+  if(launchKind!=='direct'){
+    const shell=path.join(root,'shell');
+    const invocation=[process.execPath,servicePath].map(shellQuote).join(' ');
+    const definition=launchKind==='function' ? `dsh() { ${invocation} "$@"; };` : `shopt -s expand_aliases; alias dsh=${shellQuote(invocation)};`;
+    const script=definition+'\neval "$1"';
+    await writeFile(shell,`#!/bin/sh\nprintf 'Shell banner\\n'\nexec /bin/bash --noprofile --norc -c ${shellQuote(script)} omd "$2"\n`,{mode:0o755});
+    directService=await resolveDirectPosixService({serviceCommand:'dsh web --no-open',serviceShell:shell,servicePath:process.env.PATH,nodePath:process.execPath});
+    assert.equal(directService.serviceKind,'dsh-web');
+    assert.equal(directService.dshWebLaunch.kind,'posix-shell-command');
+  }
   await writeFile(configPath,JSON.stringify({url:origin+'/',readyHost:'127.0.0.1',readyPort:port,timeoutSeconds:8,
     serviceCommand:'dsh web --no-open',workingDirectory:root,logPath,launchUrlPath,readyPath:path.join(root,'ready'),errorPath:path.join(root,'error'),
     earlyLoading,waitForWindowReveal:earlyLoading,minimumLoadingMilliseconds:1,loadingIconPath:path.resolve('assets/windows-icon-master-v2.png'),
-    directService:{executable:process.execPath,arguments:[servicePath],serviceKind:'dsh-web'}}));
+    directService}));
   const env={...process.env};delete env.OMD_LISTEN_FD;
   const proxy=spawn(process.execPath,[proxyPath,configPath],{env,windowsHide:true,stdio:'ignore'});
   t.after(async()=>{

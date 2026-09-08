@@ -185,6 +185,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(loadingConfig.directService.executable, "/opt/dsh/bin/dsh");
   assert.equal(loadingConfig.directService.serviceKind, "dsh-web");
   assert.equal(loadingConfig.minimumLoadingMilliseconds, 900);
+  assert.equal(storedConfig.serviceErrorPath, loadingConfig.errorPath);
   assert.match(storedConfig.powerShellPath, /Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe$/i);
   const launchConfig = JSON.parse(await readFile(path.join(hostSupport, "wsl-launch.json"), "utf8"));
   assert.equal(launchConfig.distro, "Ubuntu-Test");
@@ -261,6 +262,12 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   );
   assert.equal(secondShortcutCreations.find(({ shortcutPath }) => shortcutPath === pinnedPwaShortcutPath)?.existed, true);
   assert.equal(await readFile(toLocalPath(recreated.pinnedPwaShortcutBackupPath), "utf8"), originalPinnedShortcut);
+  const installedConfigPath = path.join(result.supportDirectory, "config.json");
+  const beforeRejectedCreation = await readFile(installedConfigPath, "utf8");
+  await assert.rejects(createWslLauncher(config, { executable: chromeExecutable, icon }, {
+    ...interop, resolveDirectService() { return null; },
+  }), /无法为 dsh web 生成 token 认证代理/);
+  assert.equal(await readFile(installedConfigPath, "utf8"), beforeRejectedCreation);
 });
 
 test("parses only service commands that are safe to execute without a shell", () => {

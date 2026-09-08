@@ -130,6 +130,10 @@ oh-my-deepseek create `
 
 新版 DSH 的 `?token=…` 地址由启动器在每次启动时自动读取，无需把 token 填进 `--url`。macOS 官方 Chrome App 和 WSL 已安装 PWA 也会收到本次启动的认证地址；Windows / WSL 独立窗口使用启动凭证交接。认证仍由 DSH 自己完成，旧版无 token 服务继续可用。升级本工具后，关闭旧 App，再用原来的 `create` 命令重新生成入口，使已生成的启动脚本生效。
 
+WSL 启动失败时，可运行 `omd diagnose`，或用 `omd diagnose --config ~/.local/share/oh-my-deepseek/apps/<应用目录>/config.json` 指定实际入口。它读取已生成的配置、服务和桥接器错误、最近日志，以及当前本地 HTTP 状态，不会重新生成入口或启动 DSH；启动 token 会被遮盖。若 App 已退出，连接拒绝仅代表检测时服务未运行。新版监督器会透传 loading 代理的错误、服务退出码、桥接器提前退出，以及超时前最后一次 HTTP 检测结果；更新后需重新运行原来的 `create` 命令。
+
+若诊断显示 `serviceKind: "shell"`、`loadingConfigExists: false`，而服务命令为 `dsh web --no-open`，说明旧入口没有启用 token 认证代理。更新代码后，用原参数重新运行 `create`。配置版本 34 会忽略登录 shell 欢迎信息对路径探测的干扰，并让 shell 函数、别名形式的 `dsh` 也通过认证代理启动；找不到命令时会在创建阶段明确报错。重新生成后应显示 `configVersion: 34`、`serviceKind: "loading-proxy"`、`loadingConfigExists: true`。
+
 ## 启动行为
 
 1. 请求配置的 URL，确认页面已返回；DeepSeek Harness 还会等待完整的插件启动清单。

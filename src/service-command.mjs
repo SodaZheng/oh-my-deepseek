@@ -9,27 +9,39 @@ export async function resolveDirectPosixService(config) {
   if (!words) return null;
   const [command, ...arguments_] = words;
   const shell = config.serviceShell || "/bin/zsh";
+  const isDshWeb = path.basename(command).toLowerCase() === "dsh" && arguments_[0] === "web";
+  // Login-shell banners must not become part of the executable path.
+  const begin = "__OMD_SERVICE_BEGIN__";
+  const end = "__OMD_SERVICE_END__";
   const result = spawnSync(
     shell,
-    ["-lic", `command -v ${shellQuote(command)}`],
+    ["-lic", `printf '\\n${begin}\\n'; command -v ${shellQuote(command)}; printf '\\n${end}\\n'`],
     {
       encoding: "utf8",
+      cwd: config.workingDirectory,
+      timeout: 10_000,
       env: { ...process.env, ...(config.servicePath ? { PATH: config.servicePath } : {}) },
     },
   );
-  if (result.error || result.status !== 0) return null;
-  const discoveredExecutable = result.stdout.trim();
-  if (!path.isAbsolute(discoveredExecutable) || discoveredExecutable.includes("\n")) return null;
+  const output = result.stdout || "";
+  const start = output.indexOf(begin + "\n");
+  const finish = output.indexOf("\n" + end, start + begin.length + 1);
+  const discoveredExecutable = start < 0 || finish < 0 ? "" : output.slice(start + begin.length + 1, finish).trim();
+  if (result.error || result.status !== 0 || !discoveredExecutable) {
+    if (isDshWeb) throw new Error(`无法在 ${shell} 中解析 dsh；请确认 WSL 中 dsh 已安装且登录 shell 可执行 command -v dsh，再重新生成入口。${result.error ? " " + result.error.message : ""}`);
+    return null;
+  }
+  const shellFallback = () => isDshWeb ? posixShellDshService(config, shell, command, arguments_) : null;
+  if (!path.isAbsolute(discoveredExecutable) || discoveredExecutable.includes("\n")) return shellFallback();
 
   let executable;
   try {
     executable = await realpath(discoveredExecutable);
   } catch {
-    return null;
+    return shellFallback();
   }
-  if (!(await isExecutable(executable))) return null;
+  if (!(await isExecutable(executable))) return shellFallback();
 
-  const isDshWeb = path.basename(command).toLowerCase() === "dsh" && arguments_[0] === "web";
   const nodeScript = await nodeShebangScript(executable, config.nodePath);
   if (nodeScript) {
     return {
@@ -49,6 +61,21 @@ export async function resolveDirectPosixService(config) {
     serviceKind: isDshWeb ? "dsh-web" : "generic",
     dshWebLaunch: isDshWeb ? { kind: "argv", prefixArguments: [], arguments: arguments_ } : null,
     warmupArguments: isDshWeb ? ["web", "--help"] : null,
+  };
+}
+
+function posixShellDshService(config, shell, command, arguments_) {
+  // Keep aliases/functions in their login shell, but still let the loading
+  // proxy choose the private port, capture the token and authenticate readiness.
+  const commandWord = /^[A-Za-z_][A-Za-z0-9_-]*$/.test(command) ? command : shellQuote(command);
+  const invocation = (args) => [commandWord, ...args.map(shellQuote)].join(" ");
+  return {
+    executable: shell,
+    arguments: ["-lic", invocation(arguments_)],
+    path: config.servicePath,
+    serviceKind: "dsh-web",
+    dshWebLaunch: { kind: "posix-shell-command", prefixArguments: ["-lic"], commandPath: command, arguments: arguments_ },
+    warmupArguments: ["-lic", invocation(["web", "--help"])],
   };
 }
 

@@ -3,6 +3,7 @@ import { normalizeCreateOptions } from "./config.mjs";
 import { PACKAGE_VERSION } from "./constants.mjs";
 import { createLauncher } from "./create.mjs";
 import { runDoctor } from "./doctor.mjs";
+import { diagnoseWslStartup } from "./diagnose.mjs";
 
 const OPTION_DEFINITIONS = {
   name: { type: "string", short: "n" },
@@ -20,6 +21,7 @@ const OPTION_DEFINITIONS = {
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
   version: { type: "boolean", short: "v" },
+  config: { type: "string" },
 };
 
 export async function main(argv) {
@@ -42,6 +44,10 @@ export async function main(argv) {
     return;
   }
 
+  if (command === "diagnose") {
+    process.stdout.write(`${JSON.stringify(await diagnoseWslStartup(values.config), null, 2)}\n`);
+    return;
+  }
   const config = normalizeCreateOptions(values);
   if (command === "create") {
     const result = await createLauncher(config);
@@ -54,7 +60,7 @@ export async function main(argv) {
     if (!result.ok) process.exitCode = 1;
     return;
   }
-  throw new Error(`未知命令：${command}。可用命令：create、doctor`);
+  throw new Error(`未知命令：${command}。可用命令：create、doctor、diagnose`);
 }
 
 function printCreateResult(result, asJson) {
@@ -132,6 +138,7 @@ function printDoctorResult(result, asJson) {
 }
 
 function renderHelp(command) {
+  if (command === "diagnose") return `oh-my-deepseek diagnose [--config <config.json>]\n\n读取 WSL 已生成的启动配置、错误文件和日志，并检测本地 HTTP 状态。\n不会重新生成入口或启动 DSH；输出中的启动 token 会被遮盖。\n`;
   if (command === "doctor") {
     return `oh-my-deepseek doctor [选项]
 

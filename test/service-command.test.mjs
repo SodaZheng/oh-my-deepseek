@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -29,6 +29,22 @@ test("resolves a Node CLI shebang to the pinned Node executable", async () => {
     arguments: ["web", "--no-open"],
   });
   assert.deepEqual(directService.warmupArguments, [resolvedExecutable, "web", "--help"]);
+});
+
+test("login-shell output does not disable the DSH authentication proxy", { skip: process.platform === "win32" }, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "omd-noisy-shell-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const executable = path.join(root, "dsh");
+  const shell = path.join(root, "shell");
+  await writeFile(executable, "#!/usr/bin/env node\nprocess.exit(0);\n", { mode: 0o755 });
+  await writeFile(shell, '#!/bin/sh\nprintf "Welcome to WSL\\n"\n/bin/sh "$@"\nprintf "Shell startup notice\\n"\n', { mode: 0o755 });
+  const config = { serviceCommand: "dsh web --no-open", serviceShell: shell, servicePath: `${root}:/usr/bin:/bin`, nodePath: process.execPath };
+  const resolved = await resolveDirectPosixService(config);
+  assert.equal(resolved.serviceKind, "dsh-web");
+  assert.equal(resolved.executable, process.execPath);
+  assert.equal(resolved.arguments[0], await realpath(executable));
+  await assert.rejects(resolveDirectPosixService({ ...config, serviceCommand: "/missing/omd-fixture/dsh web --no-open" }), /无法.*解析 dsh/);
+  assert.equal(await resolveDirectPosixService({ ...config, serviceCommand: "SOME_ENV=value dsh web" }), null);
 });
 
 test("resolves a Windows PowerShell command shim without loading user profiles", async () => {

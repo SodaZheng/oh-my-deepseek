@@ -83,7 +83,7 @@ export async function createMacLauncher(config, chrome, runtime = {}) {
     restartPersistence: chromeAppId ? "pending" : "not-required",
     requiresUserApproval: false,
     compileCachePrepared: false,
-    serviceLaunchMode: directService ? "direct" : "login-shell",
+    serviceLaunchMode: directService && directService.dshWebLaunch?.kind !== "posix-shell-command" ? "direct" : "login-shell",
     url: config.url,
     serviceCommand: config.serviceCommand,
     workingDirectory: config.workingDirectory,

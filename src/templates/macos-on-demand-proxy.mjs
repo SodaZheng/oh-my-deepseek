@@ -374,6 +374,14 @@ function captureServiceOutput(stream, port, readAnnouncement) {
 
 function buildDshLaunch(direct, port) {
   const logicalArguments = rewriteDshArguments(direct.dshWebLaunch?.arguments || direct.arguments, port);
+  if (direct.dshWebLaunch?.kind === "posix-shell-command") {
+    const command = direct.dshWebLaunch.commandPath;
+    const commandWord = /^[A-Za-z_][A-Za-z0-9_-]*$/.test(command) ? command : posixQuote(command);
+    return {
+      executable: direct.executable,
+      arguments: [...direct.dshWebLaunch.prefixArguments, [commandWord, ...logicalArguments.map(posixQuote)].join(" ")],
+    };
+  }
   if (direct.dshWebLaunch?.kind === "argv") {
     return {
       executable: direct.executable,
@@ -388,6 +396,10 @@ function buildDshLaunch(direct, port) {
     };
   }
   return { executable: direct.executable, arguments: logicalArguments };
+}
+
+function posixQuote(value) {
+  return "'" + String(value).replaceAll("'", "'\\\"'\\\"'") + "'";
 }
 
 function powerShellQuote(value) {

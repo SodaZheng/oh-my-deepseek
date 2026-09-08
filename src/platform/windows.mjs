@@ -107,6 +107,7 @@ export async function createWindowsLauncher(config, chrome, env = process.env) {
       hostBrowserErrorPath,
       lockPath: path.join(stateDirectory, "supervisor.lock"),
       logPath,
+      serviceErrorPath: usesLoadingScreen ? path.join(stateDirectory, "loading-error.txt") : null,
       launchUrlPath: path.join(stateDirectory, "launch-url.txt"),
     };
     const browserConfig = {
