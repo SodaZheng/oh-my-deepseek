@@ -23,6 +23,9 @@ const overlayBodyTemplate = ${overlayBody};
 const publicUrl = new URL(config.url);
 const loadingIcon = readFileSync(config.loadingIconPath);
 const loadingStartedAt = Date.now();
+const minimumLoadingMilliseconds = Number.isFinite(config.minimumLoadingMilliseconds) && config.minimumLoadingMilliseconds >= 0
+  ? config.minimumLoadingMilliseconds : 900;
+const startupPhases = new Set();
 const sockets = new Set();
 let serviceChild = null;
 let serviceSpawnError = null;
@@ -73,7 +76,6 @@ async function main() {
     if (!(await waitForService(backendPort))) {
       throw serviceSpawnError || new Error(\`服务未能在 \${config.timeoutSeconds} 秒内完整就绪\`);
     }
-    const minimumLoadingMilliseconds = Number(config.minimumLoadingMilliseconds) || 900;
     const remainingLoadingTime = minimumLoadingMilliseconds - (Date.now() - loadingStartedAt);
     if (!config.waitForWindowReveal && remainingLoadingTime > 0) await delay(remainingLoadingTime);
     backendReady = true;
@@ -83,7 +85,7 @@ async function main() {
       writeFileSync(config.launchUrlPath, launchUrl.href, { mode: 0o600 });
     }
     writeFileSync(config.readyPath, String(Date.now()), { mode: 0o600 });
-    writeLog(\`按需服务完整就绪，内部端口 \${backendPort}\`);
+    writeLog(\`按需服务完整就绪，内部端口 \${backendPort}，启动用时 \${Date.now() - loadingStartedAt} ms\`);
   } catch (error) {
     fail(error);
   }
@@ -111,13 +113,14 @@ async function handleRequest(request, response) {
   }
   if (requestUrl.pathname === "/__omd_window_visible" && request.method === "POST") {
     windowRevealedAt ||= Date.now();
+    startupPhase("window-visible");
     response.writeHead(204, { "cache-control": "no-store" });
     response.end();
     return;
   }
   if (requestUrl.pathname === "/__omd_browser_ready") {
     const visible = !config.waitForWindowReveal || (windowRevealedAt !== null
-      && Date.now() - windowRevealedAt >= (Number(config.minimumLoadingMilliseconds) || 900));
+      && Date.now() - windowRevealedAt >= minimumLoadingMilliseconds);
     const headers = { "cache-control": "no-store" };
     if (backendReady && serviceToken && !earlyLaunchNonce) {
       // A fixed-start-URL PWA must wait for the native token handoff, or use
@@ -144,6 +147,7 @@ async function handleRequest(request, response) {
       }
       if (visible) headers["set-cookie"] = readinessSetCookie;
     }
+    if (backendReady && visible) startupPhase("browser-ready");
     response.writeHead(backendReady && visible ? 204 : 503, headers);
     response.end();
     return;
@@ -167,6 +171,7 @@ async function handleRequest(request, response) {
   }
   if (requestUrl.pathname === "/__omd_handoff_complete" && request.method === "POST") {
     handoffComplete = true;
+    startupPhase(requestUrl.searchParams.get("reason") === "timeout" ? "handoff-timeout" : "handoff-rendered");
     response.writeHead(204, { "cache-control": "no-store" });
     response.end();
     return;
@@ -210,6 +215,7 @@ async function handleRequest(request, response) {
   const shouldServeBrowserLoading = isChromeDocument && !launchHandoff && !browserLoadingServed;
   if (shouldServeBrowserLoading) browserLoadingServed = true;
   if (isDocument && !launchHandoff && !startupFailure && (!backendReady || shouldServeBrowserLoading)) {
+    startupPhase("loading-document");
     const html = personalize(loadingTemplate);
     response.writeHead(200, {
       "content-type": "text/html; charset=utf-8",
@@ -255,6 +261,7 @@ function proxyHttp(request, response, upstreamPath, injectOverlay) {
     upstreamResponse.on("data", (chunk) => chunks.push(chunk));
     upstreamResponse.on("end", () => {
       const html = injectLoadingOverlay(Buffer.concat(chunks).toString("utf8"));
+      startupPhase("handoff-document");
       const responseHeaders = { ...upstreamResponse.headers };
       delete responseHeaders["content-encoding"];
       delete responseHeaders["transfer-encoding"];
@@ -319,6 +326,7 @@ function trackSocket(socket) {
 }
 
 function startService(port) {
+  startupPhase("service-spawn");
   const direct = config.directService;
   const launch = buildDshLaunch(direct, port);
   appendFileSync(config.logPath, \`\\n[\${new Date().toISOString()}] 按需启动服务：\${config.serviceCommand}（内部端口 \${port}）\\n\`);
@@ -362,6 +370,7 @@ function captureServiceOutput(stream, port, readAnnouncement) {
     appendFileSync(config.logPath, line.replace(/([?&]token=)[^\\s)]+/g, "$1[redacted]"));
   };
   stream.on("data", (chunk) => {
+    startupPhase("service-output");
     pending += chunk;
     let end;
     while ((end = pending.indexOf("\\n")) >= 0) {
@@ -447,6 +456,7 @@ async function serviceIsReady(port) {
       }
     }
     const response = await readBackendPage(port, "/", readinessCookie);
+    startupPhase("backend-http-" + response.status);
     if (response.status < 200 || response.status >= 300) return false;
     const contentType = response.headers["content-type"] || "";
     if (!contentType.includes("text/html")) return true;
@@ -495,6 +505,12 @@ function dshBootManifestIsComplete(html) {
     }
   }
   return false;
+}
+
+function startupPhase(phase) {
+  if (startupPhases.has(phase)) return;
+  startupPhases.add(phase);
+  writeLog(\`startup \${phase} +\${Date.now() - loadingStartedAt} ms\`);
 }
 
 async function reserveBackendPort() {

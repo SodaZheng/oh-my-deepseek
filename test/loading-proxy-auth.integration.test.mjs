@@ -64,7 +64,7 @@ server.listen(port,'127.0.0.1',()=>{
   }
   await writeFile(configPath,JSON.stringify({url:origin+'/',readyHost:'127.0.0.1',readyPort:port,timeoutSeconds:8,
     serviceCommand:'dsh web --no-open',workingDirectory:root,logPath,launchUrlPath,readyPath:path.join(root,'ready'),errorPath:path.join(root,'error'),
-    earlyLoading,waitForWindowReveal:earlyLoading,minimumLoadingMilliseconds:1,loadingIconPath:path.resolve('assets/windows-icon-master-v2.png'),
+    earlyLoading,waitForWindowReveal:earlyLoading,minimumLoadingMilliseconds:0,loadingIconPath:path.resolve('assets/windows-icon-master-v2.png'),
     directService}));
   const env={...process.env};delete env.OMD_LISTEN_FD;
   const proxy=spawn(process.execPath,[proxyPath,configPath],{env,windowsHide:true,stdio:'ignore'});
@@ -107,9 +107,8 @@ server.listen(port,'127.0.0.1',()=>{
     assert.equal(beforeReveal.status,503);
     assert.equal(beforeReveal.headers.get('set-cookie'),null);
     await fetch(origin+'/__omd_window_visible',{method:'POST'});
-    await new Promise(r=>setTimeout(r,5));
     login=await fetch(origin+'/__omd_browser_ready',{headers:{cookie:bootstrapCookie}});
-    assert.equal(login.status,204);
+    assert.equal(login.status,204,'a ready visible window must not fall back to a fixed 900 ms loading delay');
     assert.equal((await fetch(origin+'/api/test',{headers:{cookie:bootstrapCookie}})).status,401);
   }else{
     const waiting=await fetch(origin+'/__omd_browser_ready');

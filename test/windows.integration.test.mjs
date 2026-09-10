@@ -73,6 +73,8 @@ test("creates Windows support files and a desktop shortcut", { skip: process.pla
   assert.equal(generatedBrowserConfig.launcherHandoffPath, undefined);
   const generatedLoadingConfig = JSON.parse(await readFile(path.join(result.supportDirectory, "loading-config.json"), "utf8"));
   assert.equal(generatedLoadingConfig.platform, "win32");
+  assert.equal(generatedLoadingConfig.minimumLoadingMilliseconds, 0);
+  assert.equal(storedConfig.hostBrowserTimingPath, generatedBrowserConfig.startupTimingPath);
   assert.equal(generatedLoadingConfig.directService.serviceKind, "dsh-web");
 
   const browserHostPath = path.join(result.supportDirectory, "browser-host.ps1");

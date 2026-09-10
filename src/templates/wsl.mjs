@@ -716,6 +716,7 @@ function Start-PwaWindow([datetime]$Deadline) {
   [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, 'managed-launch', [System.Text.Encoding]::ASCII)
   try {
     Start-Process -FilePath $Config.pwaLauncherPath -ArgumentList ($QuotedArguments -join ' ') | Out-Null
+    Write-StartupPhase 'chrome-started'
     $Handle = if ($GateStarted) { Wait-ForGatedWindow $Deadline } else { 0 }
     if ($Handle) {
       $WindowWasGated = $true
@@ -732,7 +733,9 @@ function Start-PwaWindow([datetime]$Deadline) {
       [OmdChromeWindow]::Activate($Handle) | Out-Null
     }
     [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$Handle, [System.Text.Encoding]::ASCII)
+    Confirm-WindowVisible
     if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) $Handle }
+    Write-StartupPhase 'page-ready'
     return $Handle
   } catch {
     [OmdChromeWindow]::CancelWindowGate()
@@ -740,6 +743,23 @@ function Start-PwaWindow([datetime]$Deadline) {
     Remove-Item -LiteralPath $Config.windowHandlePath -Force -ErrorAction SilentlyContinue
     throw
   }
+}
+
+function Test-CompleteServiceDocument([string]$Content) {
+  if ($Content.Contains('id="omd-launch"')) { return $false }
+  if (-not $Content.Contains('<title>DeepSeek Harness</title>')) { return $true }
+  $Pattern = '(?:window\.__DSH_BOOT__|globalThis\[(?:"__DSH_BOOT__"|''__DSH_BOOT__'')\])\s*=\s*(\{.*?\})\s*</script>'
+  $Match = [regex]::Match($Content, $Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+  if (-not $Match.Success) { return $false }
+  try {
+    $Boot = $Match.Groups[1].Value | ConvertFrom-Json
+    $Entries = @($Boot.entries)
+    if ($Entries.Count -eq 0) { return $false }
+    foreach ($Entry in $Entries) {
+      if ([string]::IsNullOrWhiteSpace([string]$Entry.id) -or -not ([string]$Entry.url).StartsWith('/plugins/')) { return $false }
+    }
+    return $true
+  } catch { return $false }
 }
 
 function Test-HttpService {
@@ -750,22 +770,7 @@ function Test-HttpService {
     $ContentType = [string]$Response.Content.Headers.ContentType
     if (-not $ContentType.Contains('text/html')) { return $true }
     $Content = $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    if ($Content.Contains('id="omd-launch"')) { return $false }
-    if (-not $Content.Contains('<title>DeepSeek Harness</title>')) { return $true }
-    $Pattern = '(?:window\.__DSH_BOOT__|globalThis\[(?:"__DSH_BOOT__"|''__DSH_BOOT__'')\])\s*=\s*(\{.*?\})\s*</script>'
-    $Match = [regex]::Match($Content, $Pattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
-    if (-not $Match.Success) { return $false }
-    try {
-      $Boot = $Match.Groups[1].Value | ConvertFrom-Json
-      $Entries = @($Boot.entries)
-      if ($Entries.Count -eq 0) { return $false }
-      foreach ($Entry in $Entries) {
-        if ([string]::IsNullOrWhiteSpace([string]$Entry.id) -or -not ([string]$Entry.url).StartsWith('/plugins/')) { return $false }
-      }
-      return $true
-    } catch {
-      return $false
-    }
+    return Test-CompleteServiceDocument $Content
   } catch {
     return $false
   } finally {
@@ -789,10 +794,9 @@ function Test-LaunchSurface {
     $ContentType = [string]$Response.Content.Headers.ContentType
     if (-not $ContentType.Contains('text/html')) { return $true }
     $Content = $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    return $Content.Contains('id="omd-launch"') -or
-      $Content.Contains('window.__DSH_BOOT__') -or
-      $Content.Contains('globalThis["__DSH_BOOT__"]') -or
-      $Content.Contains("globalThis['__DSH_BOOT__']")
+    if ($Content.Contains('id="omd-launch"')) { return $true }
+    # A gateway's login form is a usable launch surface without a DSH manifest.
+    return Test-CompleteServiceDocument $Content
   } catch {
     return $false
   } finally {
@@ -819,6 +823,15 @@ function Wait-ForLoadingFrame([datetime]$Deadline) {
     Start-Sleep -Milliseconds 30
   }
   throw '小鲸鱼首帧尚未绘制完成'
+}
+
+function Confirm-WindowVisible {
+  Write-StartupPhase 'window-visible'
+  if ($Config.loadingMode) {
+    $VisibleUrl = [Uri]::new([Uri]([string]$Config.url), '/__omd_window_visible').AbsoluteUri
+    $VisibleResponse = $HttpClient.PostAsync($VisibleUrl, $null).GetAwaiter().GetResult()
+    $VisibleResponse.Dispose()
+  }
 }
 
 function Test-PageHandoff {
@@ -978,13 +991,8 @@ function Run-BrowserLifecycle {
     [OmdChromeWindow]::Activate($WindowHandle) | Out-Null
   }
   [System.IO.File]::WriteAllText([string]$Config.windowHandlePath, [string]$WindowHandle, [System.Text.Encoding]::ASCII)
-  Write-StartupPhase 'window-visible'
+  Confirm-WindowVisible
   Invoke-DevTools ('/json/activate/' + [string]$Target.id) | Out-Null
-  if ($Config.loadingMode) {
-    $VisibleUrl = [Uri]::new([Uri]([string]$Config.url), '/__omd_window_visible').AbsoluteUri
-    $VisibleResponse = $HttpClient.PostAsync($VisibleUrl, $null).GetAwaiter().GetResult()
-    $VisibleResponse.Dispose()
-  }
   if ($Config.loadingMode) { Wait-ForPageHandoff ([datetime]::UtcNow.AddSeconds([int]$Config.timeoutSeconds)) $WindowHandle }
   Write-StartupPhase 'page-ready'
   while ($true) {

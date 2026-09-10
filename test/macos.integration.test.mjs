@@ -86,9 +86,10 @@ test("installs one canonical Chrome App with a zero-resident on-demand socket la
   assert.equal(result.monitorPath, null);
   const launchAgent = await readFile(result.launchAgentPath, "utf8");
   assert.match(launchAgent, /<key>Sockets<\/key>/);
+  assert.match(launchAgent, /<key>ProcessType<\/key>\s*<string>Interactive<\/string>/);
   assert.doesNotMatch(launchAgent, /<key>KeepAlive<\/key>|<key>RunAtLoad<\/key>/);
   assert.match(result.launchAgentPath, /Oh My DeepSeek Background Launcher\.app\/Contents\/Library\/LaunchAgents/);
-  assert.match(result.launchAgentPath, /dev\.ohmydeepseek\.ondemand\.v6\./);
+  assert.match(result.launchAgentPath, /dev\.ohmydeepseek\.ondemand\.v7\./);
   assert.equal(await pathExists(path.join(result.serviceBundlePath, "Contents", "MacOS", "service-manager")), true);
   assert.equal(result.restartPersistence, "not-registered-test-mode");
   const onDemandConfig = JSON.parse(await readFile(path.join(root, "Library", "Application Support", "Oh My DeepSeek", "apps", `${config.slug}-${config.instanceId.slice(0, 8)}`, "on-demand-config.json"), "utf8"));
@@ -104,7 +105,7 @@ test("installs one canonical Chrome App with a zero-resident on-demand socket la
     assert.match(buildVersion.stdout, /minos 13\.0/);
   }
   const helperInfo = await readFile(path.join(result.serviceBundlePath, "Contents", "Info.plist"), "utf8");
-  assert.match(helperInfo, /<key>CFBundleVersion<\/key>\s*<string>6<\/string>/);
+  assert.match(helperInfo, /<key>CFBundleVersion<\/key>\s*<string>7<\/string>/);
   const ownership = JSON.parse(await readFile(path.join(root, "Library", "Application Support", "Oh My DeepSeek", "apps", `${config.slug}-${config.instanceId.slice(0, 8)}`, "ownership.json"), "utf8"));
   assert.equal(ownership.appPath, result.appPath);
   assert.equal(ownership.chromeAppId, appId);

@@ -3,7 +3,7 @@ import { normalizeCreateOptions } from "./config.mjs";
 import { PACKAGE_VERSION } from "./constants.mjs";
 import { createLauncher } from "./create.mjs";
 import { runDoctor } from "./doctor.mjs";
-import { diagnoseWslStartup } from "./diagnose.mjs";
+import { diagnoseStartup } from "./diagnose.mjs";
 
 const OPTION_DEFINITIONS = {
   name: { type: "string", short: "n" },
@@ -45,7 +45,7 @@ export async function main(argv) {
   }
 
   if (command === "diagnose") {
-    process.stdout.write(`${JSON.stringify(await diagnoseWslStartup(values.config), null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(await diagnoseStartup(values.config), null, 2)}\n`);
     return;
   }
   const config = normalizeCreateOptions(values);
@@ -138,7 +138,7 @@ function printDoctorResult(result, asJson) {
 }
 
 function renderHelp(command) {
-  if (command === "diagnose") return `oh-my-deepseek diagnose [--config <config.json>]\n\n读取 WSL 已生成的启动配置、错误文件和日志，并检测本地 HTTP 状态。\n不会重新生成入口或启动 DSH；输出中的启动 token 会被遮盖。\n`;
+  if (command === "diagnose") return `oh-my-deepseek diagnose [--config <config.json>]\n\n读取 Windows/WSL 已生成的启动配置、错误、服务日志和浏览器启动耗时，并检测本地 HTTP 状态。\n不会重新生成入口或启动 DSH；输出中的启动 token 会被遮盖。\n`;
   if (command === "doctor") {
     return `oh-my-deepseek doctor [选项]
 

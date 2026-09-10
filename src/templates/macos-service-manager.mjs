@@ -68,6 +68,9 @@ export function renderMacManagedLaunchAgent({ label, monitorConfigPath, logPath 
 }
 
 export function renderMacOnDemandLaunchAgent({ label, configPath, logPath, host, port }) {
+  // The visible App waits on this HTTP socket. Background throttles the entire
+  // DSH process tree; Adaptive cannot infer demand from HTTP (it requires XPC).
+  // Interactive changes scheduling, not visibility or socket-only activation.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -98,7 +101,7 @@ export function renderMacOnDemandLaunchAgent({ label, configPath, logPath, host,
     </dict>
   </dict>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
   <key>LimitLoadToSessionType</key>
   <string>Aqua</string>
   <key>ThrottleInterval</key>

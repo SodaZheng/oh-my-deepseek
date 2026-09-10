@@ -75,6 +75,12 @@ WSL 模式保留与原生桌面入口一致的行为：静默启动、自定义�
 
 切换到真实页面前会连续两次验证完整页面、`window.__DSH_BOOT__` 和插件清单，避免把端口已监听或半初始化 HTML 当作可用。检查间隔是 100 ms；WSL 的 Windows 宿主侧会先确认 localhost 转发已经能读取 loading 或完整页面，再让窗口门显示首帧。
 
+macOS 配置版本 35 使用 v7 按需启动服务，将 `ProcessType` 设为 `Interactive`。这个服务直接影响桌面 App 的响应速度，通过 HTTP socket 接收请求；旧的 `Background` 分类会限制 DSH 的 CPU 和 I/O，使插件前端包的初始化明显变慢。窗口可见性仍由 Chrome App 控制，退出后仍无常驻进程。已有入口重新运行 `oh-my-deepseek create` 后生效。
+
+启动日志中的 `startup` 行记录服务派生、首次输出、后端首次响应和页面交接的耗时；`handoff-rendered` 表示页面完成布局，`handoff-timeout` 表示触发了 15 秒兜底。访问验证等静态页面现在也会在主要内容连续两帧完成布局后淡出遮罩，无需等待 React 的 `#root`。页面自行替换整个文档时可能不会回报交接事件，因此缺少这一行本身不代表启动失败。
+
+Windows 和 WSL 配置版本 36 将启动画面的固定最短停留设为 0：后端完整就绪、窗口真正可见后即可开始交接，不再额外等待 900 ms。首帧绘制、窗口尺寸恢复和同窗淡出仍照常执行。已安装 PWA 的启动探测也接受正常的访问验证页面，同时继续拒绝插件清单不完整的 DSH 页面。Windows 的进程调度与 macOS 不同，这项修改不调整 Windows/WSL 进程优先级。
+
 WSL 创建入口时会扫描 Windows Chrome 的 `Default` 和 `Profile N`，按页面 URL 识别已经安装的 PWA。检测成功后使用 Chrome 官方 `chrome_proxy.exe --app-id=<ID> --profile-directory=<Profile>` 启动，因此复用 Windows Chrome 的登录状态、PWA 菜单和窗口能力；任务栏图标则来自本工具生成的 `app.ico`。主路径不会创建独立调试 Profile，也不需要 DevTools 端口。桥接器通过 Windows 顶层窗口句柄完成身份切换、激活和关闭检测。
 
 按需窗口门只处理由 OMD 入口启动的新窗口；托管后的真实 PWA 窗口会改用本工具的专属 App ID，并与桌面、开始菜单快捷方式保持一致。Chrome 的 Profile、App ID 和启动参数不变，任务栏身份与浏览器身份彼此解耦。
@@ -130,9 +136,9 @@ oh-my-deepseek create `
 
 新版 DSH 的 `?token=…` 地址由启动器在每次启动时自动读取，无需把 token 填进 `--url`。macOS 官方 Chrome App 和 WSL 已安装 PWA 也会收到本次启动的认证地址；Windows / WSL 独立窗口使用启动凭证交接。认证仍由 DSH 自己完成，旧版无 token 服务继续可用。升级本工具后，关闭旧 App，再用原来的 `create` 命令重新生成入口，使已生成的启动脚本生效。
 
-WSL 启动失败时，可运行 `omd diagnose`，或用 `omd diagnose --config ~/.local/share/oh-my-deepseek/apps/<应用目录>/config.json` 指定实际入口。它读取已生成的配置、服务和桥接器错误、最近日志，以及当前本地 HTTP 状态，不会重新生成入口或启动 DSH；启动 token 会被遮盖。若 App 已退出，连接拒绝仅代表检测时服务未运行。新版监督器会透传 loading 代理的错误、服务退出码、桥接器提前退出，以及超时前最后一次 HTTP 检测结果；更新后需重新运行原来的 `create` 命令。
+Windows 或 WSL 启动缓慢、失败时，可在对应环境运行 `omd diagnose`，或用 `omd diagnose --config <config.json>` 指定实际入口。Windows 默认查找 `%LOCALAPPDATA%\Oh My DeepSeek\apps`，WSL 默认查找 `~/.local/share/oh-my-deepseek/apps`。它读取已生成的配置、服务和桥接器错误、最近服务日志，以及 `browserTimingTail` 中的浏览器启动耗时，并检测当前本地 HTTP 状态；不会重新生成入口或启动 DSH，启动 token 会被遮盖。对照服务日志的 `backend-http-*` / 完整就绪用时与浏览器日志的 `chrome-started`、`window-visible`、`page-ready`，可以区分后端初始化和窗口交接的等待。若 App 已退出，连接拒绝仅代表检测时服务未运行。更新后需重新运行原来的 `create` 命令。
 
-若诊断显示 `serviceKind: "shell"`、`loadingConfigExists: false`，而服务命令为 `dsh web --no-open`，说明旧入口没有启用 token 认证代理。更新代码后，用原参数重新运行 `create`。配置版本 34 会忽略登录 shell 欢迎信息对路径探测的干扰，并让 shell 函数、别名形式的 `dsh` 也通过认证代理启动；找不到命令时会在创建阶段明确报错。重新生成后应显示 `configVersion: 34`、`serviceKind: "loading-proxy"`、`loadingConfigExists: true`。
+若诊断显示 `serviceKind: "shell"`、`loadingConfigExists: false`，而服务命令为 `dsh web --no-open`，说明旧入口没有启用 token 认证代理。更新代码后，用原参数重新运行 `create`。配置版本 34 起会忽略登录 shell 欢迎信息对路径探测的干扰，并让 shell 函数、别名形式的 `dsh` 也通过认证代理启动；找不到命令时会在创建阶段明确报错。重新生成后应显示 `configVersion: 36`、`serviceKind: "loading-proxy"`、`loadingConfigExists: true`。
 
 ## 启动行为
 

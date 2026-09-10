@@ -4,7 +4,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  diagnoseWslStartup(process.argv[2]).then(
+  diagnoseStartup(process.argv[2]).then(
     (result) => console.log(JSON.stringify(result, null, 2)),
     (error) => { console.error(error.message); process.exitCode = 1; },
   );
@@ -12,21 +12,28 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
 
 // Inspect the installed artifacts, not a newly normalized create configuration.
 // Do not dump environment variables, tokens, cookies, or entire profile files.
-export async function diagnoseWslStartup(configPath) {
-  const base = path.join(os.homedir(), ".local/share/oh-my-deepseek/apps");
-  const paths = configPath ? [path.resolve(configPath)] : (await readdir(base))
+export async function diagnoseStartup(configPath, { platform = process.platform, homeDirectory = os.homedir(), env = process.env } = {}) {
+  const base = platform === "win32"
+    ? path.join(env.LOCALAPPDATA || path.join(homeDirectory, "AppData", "Local"), "Oh My DeepSeek", "apps")
+    : path.join(homeDirectory, ".local", "share", "oh-my-deepseek", "apps");
+  const paths = configPath ? [path.resolve(configPath)] : (await readdir(base).catch((error) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }))
     .filter((name) => !name.startsWith(".")).map((name) => path.join(base, name, "config.json"));
   const reports = [];
   for (const file of paths) {
     const config = await json(file);
     if (!config) continue;
-    if (config.platform !== "wsl") throw new Error("diagnose 当前用于 WSL 生成的 config.json");
+    if (!["wsl", "win32"].includes(config.platform)) throw new Error("diagnose 支持 Windows 或 WSL 生成的 config.json");
     const loadingPath = config.directService?.serviceKind === "loading-proxy"
       ? config.directService.arguments?.[1] : null;
     const loading = loadingPath ? await json(loadingPath) : null;
     const supervisor = await readFile(path.join(path.dirname(file), "supervisor.mjs"), "utf8").catch(() => "");
+    const browserTimingPath = config.hostBrowserTimingPath
+      || (config.launchUrlPath ? path.join(path.dirname(config.launchUrlPath), "browser-startup.log") : null);
     const report = {
-      configPath: file, configVersion: config.configVersion, launchMode: config.launchMode,
+      configPath: file, platform: config.platform, configVersion: config.configVersion, launchMode: config.launchMode,
       serviceKind: config.directService?.serviceKind ?? "shell",
       serviceShell: config.serviceShell,
       serviceCommand: redact(config.serviceCommand ?? ""), url: redact(config.url),
@@ -34,6 +41,8 @@ export async function diagnoseWslStartup(configPath) {
       serviceExecutable: config.directService?.executable,
       serviceExecutableExists: await exists(config.directService?.executable),
       loadingConfigExists: Boolean(loading),
+      minimumLoadingMilliseconds: loading?.minimumLoadingMilliseconds ?? null,
+      waitForWindowReveal: loading?.waitForWindowReveal ?? null,
       dshExecutable: loading?.directService?.executable,
       dshExecutableExists: await exists(loading?.directService?.executable),
       supervisorUsesProxyReadiness: config.directService?.serviceKind === "loading-proxy" && supervisor.includes('new URL("/__omd_ready", config.url)'),
@@ -42,6 +51,7 @@ export async function diagnoseWslStartup(configPath) {
       launchUrlExists: await exists(config.launchUrlPath),
       serviceError: await readDiagnostic(config.serviceErrorPath || loading?.errorPath),
       browserError: await readDiagnostic(config.hostBrowserErrorPath),
+      browserTimingPath, browserTimingTail: await readDiagnostic(browserTimingPath),
       logPath: config.logPath, logTail: await readDiagnostic(config.logPath),
       probes: [],
     };
@@ -61,9 +71,12 @@ export async function diagnoseWslStartup(configPath) {
     }
     reports.push(report);
   }
-  if (!reports.length) throw new Error("没有找到 WSL 启动配置；可用 --config 指定实际 config.json");
+  if (!reports.length) throw new Error("没有找到 Windows/WSL 启动配置；可用 --config 指定实际 config.json");
   return { node: process.version, reports };
 }
+
+// Preserve imports used by existing diagnostic scripts.
+export const diagnoseWslStartup = diagnoseStartup;
 
 function redact(value) {
   return String(value).replace(/([?&](?:token|__omd_boot)=)[^\s)"']+/g, "$1[redacted]");

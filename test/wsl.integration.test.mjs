@@ -184,7 +184,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(loadingConfig.platform, "wsl");
   assert.equal(loadingConfig.directService.executable, "/opt/dsh/bin/dsh");
   assert.equal(loadingConfig.directService.serviceKind, "dsh-web");
-  assert.equal(loadingConfig.minimumLoadingMilliseconds, 900);
+  assert.equal(loadingConfig.minimumLoadingMilliseconds, 0);
   assert.equal(storedConfig.serviceErrorPath, loadingConfig.errorPath);
   assert.match(storedConfig.powerShellPath, /Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe$/i);
   const launchConfig = JSON.parse(await readFile(path.join(hostSupport, "wsl-launch.json"), "utf8"));
@@ -192,6 +192,7 @@ test("creates a Windows shortcut payload while keeping the supervisor in WSL", a
   assert.equal(launchConfig.user, "tester");
   assert.match(launchConfig.wslPath, /wsl\.exe$/i);
   const browserConfig = JSON.parse(await readFile(path.join(hostSupport, "browser-config.json"), "utf8"));
+  assert.equal(storedConfig.hostBrowserTimingPath, toLocalPath(browserConfig.startupTimingPath));
   assert.equal(browserConfig.launchMode, "installed-pwa");
   assert.equal(browserConfig.loadingMode, true);
   assert.equal(browserConfig.loadingBoundsPath, undefined);

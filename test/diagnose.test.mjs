@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { diagnoseWslStartup } from "../src/diagnose.mjs";
+import { diagnoseStartup, diagnoseWslStartup } from "../src/diagnose.mjs";
 
 test("startup diagnosis inspects installed artifacts and redacts login URLs", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "omd-diagnose-"));
@@ -36,4 +36,31 @@ test("startup diagnosis inspects installed artifacts and redacts login URLs", as
   assert.equal(result.reports[0].loadingConfigExists, true);
   assert.match(result.reports[0].serviceError, /plugin failed/);
   assert.doesNotMatch(JSON.stringify(result), /fixture-secret|fixture-nonce/);
+});
+
+for (const platform of ["win32", "wsl"]) test(`diagnosis discovers ${platform} installs and includes browser timing without credentials`, async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "omd-diagnose-platform-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const localAppData = path.join(root, "Local AppData");
+  const app = platform === "win32"
+    ? path.join(localAppData, "Oh My DeepSeek", "apps", "fixture")
+    : path.join(root, ".local", "share", "oh-my-deepseek", "apps", "fixture");
+  await mkdir(app, { recursive: true });
+  const timingPath = path.join(root, "browser-startup.log");
+  await writeFile(timingPath, "[fixture] window-visible: 1400 ms\n[fixture] page-ready: 1900 ms\nurl /?__omd_boot=private-nonce");
+  const loadingPath = path.join(app, "loading-config.json");
+  await writeFile(loadingPath, JSON.stringify({ minimumLoadingMilliseconds: 0, waitForWindowReveal: true }));
+  await writeFile(path.join(app, "config.json"), JSON.stringify({
+    platform, url: "http://example.invalid/", workingDirectory: root,
+    hostBrowserTimingPath: timingPath,
+    directService: { serviceKind: "loading-proxy", arguments: ["proxy.mjs", loadingPath] },
+  }));
+  const result = await diagnoseStartup(undefined, { platform, homeDirectory: root, env: { LOCALAPPDATA: localAppData } });
+  assert.equal(result.reports[0].platform, platform);
+  assert.equal(result.reports[0].minimumLoadingMilliseconds, 0);
+  assert.equal(result.reports[0].waitForWindowReveal, true);
+  assert.match(result.reports[0].browserTimingTail, /page-ready: 1900 ms/);
+  assert.doesNotMatch(JSON.stringify(result), /private-nonce/);
+  assert.deepEqual(result.reports[0].probes, [], "diagnosis must not contact non-loopback addresses");
+  assert.equal(diagnoseWslStartup, diagnoseStartup);
 });

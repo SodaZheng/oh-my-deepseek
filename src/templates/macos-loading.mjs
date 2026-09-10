@@ -232,36 +232,40 @@ export function renderMacLoadingOverlayBody() {
   let stableFrames = 0;
   let observer = null;
   let fallbackInterval = null;
-  const finish = () => {
+  const finish = (reason = 'rendered') => {
     if (!overlay || overlay.classList.contains('omd-launch--leaving')) return;
     overlay.classList.add('omd-launch--leaving');
     if (observer) observer.disconnect();
     if (fallbackInterval) clearInterval(fallbackInterval);
-    fetch('/__omd_handoff_complete', { method: 'POST', cache: 'no-store', keepalive: true }).catch(() => {});
+    fetch('/__omd_handoff_complete?reason=' + reason, { method: 'POST', cache: 'no-store', keepalive: true }).catch(() => {});
     setTimeout(() => {
       overlay.remove();
       document.getElementById('omd-launch-style')?.remove();
       document.getElementById('omd-launch-handoff')?.remove();
     }, 500);
   };
-  const inspect = () => {
-    const root = document.getElementById('root');
-    const ready = root && root.childElementCount > 0 && root.getBoundingClientRect().height > 80;
-    stableFrames = ready ? stableFrames + 1 : 0;
+  const inspect = (advanceFrame = false) => {
+    // Authentication gateways can return a complete HTML form instead of the
+    // React shell. That page must be usable without waiting for the timeout.
+    const root = document.getElementById('root') || document.querySelector('main, [role="main"], form');
+    const ready = root && root.childElementCount > 0 && root.getBoundingClientRect().height > 80
+      && getComputedStyle(root).visibility !== 'hidden';
+    if (!ready) stableFrames = 0;
+    else if (advanceFrame) stableFrames += 1;
     if (stableFrames >= 2) {
       finish();
       return;
     }
   };
   const inspectFrame = () => {
-    inspect();
+    inspect(true);
     if (!overlay?.classList.contains('omd-launch--leaving')) requestAnimationFrame(inspectFrame);
   };
-  observer = new MutationObserver(inspect);
+  observer = new MutationObserver(() => inspect());
   observer.observe(document.documentElement, { childList: true, subtree: true });
   fallbackInterval = setInterval(inspect, 100);
   requestAnimationFrame(inspectFrame);
-  setTimeout(finish, 15000);
+  setTimeout(() => finish('timeout'), 15000);
 })();
 </script>`;
 }

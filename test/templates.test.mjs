@@ -120,6 +120,8 @@ test("macOS on-demand templates use socket activation without an idle process", 
   assert.match(loadingOverlay, /__omd_handoff_complete/);
   assert.match(loadingOverlay, /prefers-reduced-motion/);
   assert.match(launchAgent, /<key>Sockets<\/key>/);
+  assert.match(launchAgent, /<key>ProcessType<\/key>\s*<string>Interactive<\/string>/);
+  assert.doesNotMatch(launchAgent, /<string>Background<\/string>|LowPriorityIO/);
   assert.match(launchAgent, /<key>BundleProgram<\/key>/);
   assert.doesNotMatch(launchAgent, /<key>RunAtLoad<\/key>|<key>KeepAlive<\/key>/);
   assert.match(launchAgent, /config &amp; state\.json/);
